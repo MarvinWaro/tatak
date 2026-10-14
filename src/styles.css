@@ -1637,3 +1637,98 @@ a {
     opacity: 0;
   }
 }
+
+/* ---------- Barista PIN keypad ---------- */
+
+.pinpad {
+  width: 100%;
+  max-width: 300px;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.pinpad-title {
+  font-weight: 800;
+  font-size: var(--text-lg);
+  font-stretch: 85%;
+  font-variation-settings: "wdth" 85;
+}
+
+.pinpad-dots {
+  display: flex;
+  gap: 16px;
+  padding: 4px 0;
+}
+
+.pinpad-dots span {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  opacity: 0.6;
+  transition: background-color 80ms ease;
+}
+
+.pinpad-dots span.on {
+  background: currentColor;
+  opacity: 1;
+}
+
+.pinpad-error {
+  min-height: 1.4em;
+  font-weight: 700;
+  font-size: var(--text-sm);
+  color: var(--bond);
+  text-align: center;
+}
+
+.pinpad--reward .pinpad-error {
+  color: var(--danger);
+}
+
+.pinpad-keys {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.pinpad-keys button {
+  height: 64px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.16);
+  color: inherit;
+  font-size: var(--text-xl);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pinpad-keys button:active {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.pinpad--reward .pinpad-keys button {
+  background: rgba(75, 47, 142, 0.12);
+}
+
+.pinpad--reward .pinpad-keys button:active {
+  background: rgba(75, 47, 142, 0.24);
+}
+
+.pinpad-keys button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pinpad-keys .pinpad-text {
+  font-size: var(--text-sm);
+  font-weight: 700;
+}

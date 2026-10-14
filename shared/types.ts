@@ -18,6 +18,8 @@ export interface PublicShop {
   stampMode: StampMode;
   openTime: string | null;
   closeTime: string | null;
+  /** When true, the barista types a 4-digit PIN after the hold to approve a stamp. */
+  requirePin: boolean;
   menu: PublicMenuItem[];
 }
 
@@ -76,6 +78,8 @@ export interface ShopSettings {
   maxStampsPerDay: number;
   openTime: string | null;
   closeTime: string | null;
+  requirePin: boolean;
+  hasPin: boolean;
 }
 
 export interface AdminMenuItem extends PublicMenuItem {

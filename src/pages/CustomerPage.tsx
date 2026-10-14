@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect, useState } from "react";
 import type { CardCreated, CardView, OrderResult, PublicMenuItem, PublicShop } from "../../shared/types";
 import { HoldButton } from "../components/HoldButton";
 import { Icon } from "../components/Icon";
+import { PinPad } from "../components/PinPad";
 import { StampCard } from "../components/StampCard";
 import { ApiError, api, errorMessage } from "../lib/api";
 import { itemsText, peso, plural, timeOf, whenOf } from "../lib/format";
@@ -610,6 +611,103 @@ function useLockScroll() {
   }, []);
 }
 
+/**
+ * The barista's part of the handoff: hold the button, then (if the shop uses a PIN) type the PIN.
+ * `send` makes the API call; a wrong PIN keeps the keypad open so the barista can try again.
+ */
+function BaristaApproval({
+  requirePin,
+  variant,
+  holdLabel,
+  busyLabel,
+  backLabel,
+  send,
+  onDone,
+  onBack,
+  onError,
+}: {
+  requirePin: boolean;
+  variant: "stamp" | "reward";
+  holdLabel: string;
+  busyLabel: string;
+  backLabel: string;
+  send: (pin?: string) => Promise<OrderResult>;
+  onDone: (r: OrderResult) => void;
+  onBack: () => void;
+  onError?: (err: unknown) => void;
+}) {
+  const [step, setStep] = useState<"hold" | "pin">("hold");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pinError, setPinError] = useState<string | null>(null);
+
+  const run = async (pin?: string) => {
+    setBusy(true);
+    setError(null);
+    setPinError(null);
+    try {
+      onDone(await send(pin));
+    } catch (err) {
+      setBusy(false);
+      const code = err instanceof ApiError ? err.code : undefined;
+      if (code === "wrong_pin") {
+        setPinError(errorMessage(err));
+        return;
+      }
+      if (code === "pin_required") {
+        // The shop turned the PIN on after this page loaded.
+        setStep("pin");
+        return;
+      }
+      setStep("hold");
+      setError(errorMessage(err));
+      onError?.(err);
+    }
+  };
+
+  return (
+    <>
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="handoff-hold">
+        {step === "hold" ? (
+          <>
+            <HoldButton
+              label={holdLabel}
+              busyLabel={busyLabel}
+              busy={busy}
+              variant={variant}
+              onComplete={() => (requirePin ? setStep("pin") : void run())}
+            />
+            <p className="small">
+              {requirePin
+                ? "Barista: hold until the ring fills, then enter your PIN."
+                : "Barista: press and hold until the ring fills."}
+            </p>
+          </>
+        ) : (
+          <PinPad
+            busy={busy}
+            error={pinError}
+            variant={variant}
+            onSubmit={(pin) => void run(pin)}
+            onCancel={() => {
+              setStep("hold");
+              setPinError(null);
+            }}
+          />
+        )}
+        <button className="link-btn" onClick={onBack} disabled={busy}>
+          {backLabel}
+        </button>
+      </div>
+    </>
+  );
+}
+
 function Handoff({
   shop,
   card,
@@ -628,32 +726,17 @@ function Handoff({
   onMenuChanged: (v: CardView) => void;
 }) {
   useLockScroll();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const total = lines.reduce((s, l) => s + l.qty * l.item.priceCents, 0);
   const stampItems = lines.reduce((s, l) => s + (l.item.earnsStamp ? l.qty : 0), 0);
   const earns = shop.stampMode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
   const who = card.card.nickname ? `${card.card.nickname}, card ${card.card.code}` : `Card ${card.card.code}`;
 
-  const approve = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      onDone(
-        await api<OrderResult>("/api/card/orders", {
-          method: "POST",
-          body: { items: lines.map((l) => ({ id: l.item.id, qty: l.qty })) },
-          cardToken: token,
-        }),
-      );
-    } catch (err) {
-      setError(errorMessage(err));
-      setBusy(false);
-      if (err instanceof ApiError && err.code === "menu_changed") {
-        api<CardView>("/api/card", { cardToken: token }).then(onMenuChanged, () => {});
-      }
-    }
-  };
+  const send = (pin?: string) =>
+    api<OrderResult>("/api/card/orders", {
+      method: "POST",
+      body: { items: lines.map((l) => ({ id: l.item.id, qty: l.qty })), pin },
+      cardToken: token,
+    });
 
   return (
     <div className="handoff" role="dialog" aria-modal="true" aria-label="Order for the barista">
@@ -676,18 +759,21 @@ function Handoff({
         </div>
         <p className="handoff-who">{who}</p>
         {earns > 0 && <span className="handoff-earn">Earns {plural(earns, "stamp", "stamps")}</span>}
-        {error && (
-          <p className="form-error" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="handoff-hold">
-          <HoldButton label="Hold to stamp" busyLabel="Stamping…" busy={busy} onComplete={approve} />
-          <p className="small">Barista: press and hold until the ring fills.</p>
-          <button className="link-btn" onClick={onBack} disabled={busy}>
-            Change order
-          </button>
-        </div>
+        <BaristaApproval
+          requirePin={shop.requirePin}
+          variant="stamp"
+          holdLabel="Hold to stamp"
+          busyLabel="Stamping…"
+          backLabel="Change order"
+          send={send}
+          onDone={onDone}
+          onBack={onBack}
+          onError={(err) => {
+            if (err instanceof ApiError && err.code === "menu_changed") {
+              api<CardView>("/api/card", { cardToken: token }).then(onMenuChanged, () => {});
+            }
+          }}
+        />
       </div>
     </div>
   );
@@ -758,20 +844,9 @@ function RewardHandoff({
   onDone: (r: OrderResult) => void;
 }) {
   useLockScroll();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const who = card.card.nickname ? `${card.card.nickname}, card ${card.card.code}` : `Card ${card.card.code}`;
-
-  const give = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      onDone(await api<OrderResult>("/api/card/redeem", { method: "POST", body: { itemId: item.id }, cardToken: token }));
-    } catch (err) {
-      setError(errorMessage(err));
-      setBusy(false);
-    }
-  };
+  const send = (pin?: string) =>
+    api<OrderResult>("/api/card/redeem", { method: "POST", body: { itemId: item.id, pin }, cardToken: token });
 
   return (
     <div className="handoff handoff--reward" role="dialog" aria-modal="true" aria-label="Free drink for the barista">
@@ -783,18 +858,16 @@ function RewardHandoff({
         <p className="handoff-who">
           For {who}. Uses {shop.stampsRequired} of {card.card.stamps} stamps.
         </p>
-        {error && (
-          <p className="form-error" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="handoff-hold">
-          <HoldButton label="Hold to give" busyLabel="Saving…" busy={busy} onComplete={give} variant="reward" />
-          <p className="small">Barista: press and hold until the ring fills.</p>
-          <button className="link-btn" onClick={onBack} disabled={busy}>
-            Pick another drink
-          </button>
-        </div>
+        <BaristaApproval
+          requirePin={shop.requirePin}
+          variant="reward"
+          holdLabel="Hold to give"
+          busyLabel="Saving…"
+          backLabel="Pick another drink"
+          send={send}
+          onDone={onDone}
+          onBack={onBack}
+        />
       </div>
     </div>
   );

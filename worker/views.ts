@@ -30,6 +30,8 @@ export interface CardRow {
   rewards_redeemed: number;
   is_blocked: number;
   last_visit_at: number | null;
+  pin_failures: number;
+  pin_locked_until: number;
   created_at: number;
 }
 
@@ -55,6 +57,7 @@ export const toPublicShop = (s: ShopRow, menu: MenuRow[]): PublicShop => ({
   stampMode: s.stamp_mode,
   openTime: s.open_time,
   closeTime: s.close_time,
+  requirePin: s.require_pin === 1 && s.pin_hash !== null,
   menu: menu.map(toPublicMenuItem),
 });
 
@@ -71,6 +74,8 @@ export const toShopSettings = (s: ShopRow): ShopSettings => ({
   maxStampsPerDay: s.max_stamps_per_day,
   openTime: s.open_time,
   closeTime: s.close_time,
+  requirePin: s.require_pin === 1 && s.pin_hash !== null,
+  hasPin: s.pin_hash !== null,
 });
 
 export const toCardSummary = (c: CardRow): CardSummary => ({

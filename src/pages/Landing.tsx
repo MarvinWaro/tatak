@@ -63,7 +63,7 @@ export function Landing() {
         <li>
           <div>
             <h3>Hold to stamp</h3>
-            <p>Customers pick their order on their phone and show it to you. Press and hold the button to stamp it.</p>
+            <p>Customers pick their order on their phone and show it to you. Hold the button and type your PIN to stamp it.</p>
           </div>
         </li>
         <li>
