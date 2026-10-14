@@ -1,8 +1,19 @@
 import { type CSSProperties, useState } from "react";
 import type { ShopSettings, StampMode } from "../../../shared/types";
+import {
+  CARD_COLOR_KEYS,
+  CARD_COLORS,
+  type CardColor,
+  INK_COLOR_KEYS,
+  INK_COLORS,
+  type InkColor,
+  themeVars,
+} from "../../../shared/theme";
 import { Icon } from "../../components/Icon";
+import { StampCard } from "../../components/StampCard";
 import { useToast } from "../../components/Toast";
 import { api, errorMessage } from "../../lib/api";
+import { resizeLogo } from "../../lib/image";
 import { Link, navigate } from "../../lib/router";
 import { useShop } from "./AdminLayout";
 
@@ -42,6 +53,7 @@ export function Settings() {
         </div>
       </section>
 
+      <BrandingSettings />
       <PinSettings />
       <ShopForm />
       <PasswordForm />
@@ -56,6 +68,160 @@ export function Settings() {
         </button>
       </section>
     </div>
+  );
+}
+
+const DAY = 86400000;
+
+/** Logo and colors of the customer's stamp card, with a live preview. */
+function BrandingSettings() {
+  const { shop, setShop } = useShop();
+  const toast = useToast();
+  const [card, setCard] = useState<CardColor>(shop.cardColor);
+  const [ink, setInk] = useState<InkColor>(shop.inkColor);
+  const [busy, setBusy] = useState<"colors" | "logo" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const changed = card !== shop.cardColor || ink !== shop.inkColor;
+  const [sampleDates] = useState(() => [0, 1, 3, 6].map((d) => Date.now() - d * DAY));
+
+  const saveColors = async () => {
+    setBusy("colors");
+    setError(null);
+    try {
+      setShop(await api<ShopSettings>("/api/admin/shop", { method: "PATCH", body: { cardColor: card, inkColor: ink } }));
+      toast("Card colors saved");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const uploadLogo = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy("logo");
+    setError(null);
+    try {
+      const dataUrl = await resizeLogo(file);
+      setShop(await api<ShopSettings>("/api/admin/logo", { method: "POST", body: { dataUrl } }));
+      toast("Logo uploaded");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removeLogo = async () => {
+    setBusy("logo");
+    setError(null);
+    try {
+      setShop(await api<ShopSettings>("/api/admin/logo", { method: "DELETE" }));
+      toast("Logo removed");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="panel stack">
+      <h2 className="panel-title" style={{ margin: 0 }}>
+        Card design
+      </h2>
+      <p className="small muted">This is how your customers' stamp card looks. Changes show for everyone right away.</p>
+
+      <div className="brand-preview" style={themeVars(card, ink) as CSSProperties}>
+        <StampCard
+          shopName={shop.name}
+          code="K7Q4MZ"
+          required={shop.stampsRequired}
+          stamps={Math.min(4, shop.stampsRequired - 1)}
+          stampDates={sampleDates}
+          rewardText={shop.rewardText}
+          timezone={shop.timezone}
+          logoUrl={shop.logoUrl}
+        />
+        <span className="brand-preview-button">Order</span>
+      </div>
+
+      <div className="field">
+        <span className="field-label">Logo</span>
+        <div className="row wrap">
+          {shop.logoUrl ? (
+            <img className="logo-thumb" src={shop.logoUrl} alt="Your logo" />
+          ) : (
+            <span className="logo-thumb logo-thumb--empty" aria-hidden="true">
+              <Icon name="cup" />
+            </span>
+          )}
+          <label className={`btn btn--sm ${busy === "logo" ? "is-busy" : ""}`}>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="sr-only"
+              disabled={busy !== null}
+              onChange={(e) => {
+                void uploadLogo(e.target.files?.[0]);
+                e.target.value = "";
+              }}
+            />
+            {busy === "logo" ? "Uploading…" : shop.logoUrl ? "Change logo" : "Upload logo"}
+          </label>
+          {shop.logoUrl && (
+            <button className="link-btn link-btn--danger" onClick={removeLogo} disabled={busy !== null}>
+              Remove logo
+            </button>
+          )}
+        </div>
+        <span className="field-hint">PNG, JPG or WebP. Square pictures look best. We shrink it to 256 pixels.</span>
+      </div>
+
+      <fieldset className="swatch-group">
+        <legend className="field-label">Card color</legend>
+        <div className="swatches">
+          {CARD_COLOR_KEYS.map((key) => (
+            <label key={key} className="swatch" title={CARD_COLORS[key].label}>
+              <input type="radio" name="card-color" checked={card === key} onChange={() => setCard(key)} />
+              <span className="swatch-chip" style={{ background: CARD_COLORS[key].hex }} />
+              <span className="swatch-name">{CARD_COLORS[key].label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <fieldset className="swatch-group">
+        <legend className="field-label">Stamp color</legend>
+        <div className="swatches">
+          {INK_COLOR_KEYS.map((key) => (
+            <label key={key} className="swatch" title={INK_COLORS[key].label}>
+              <input type="radio" name="ink-color" checked={ink === key} onChange={() => setInk(key)} />
+              <span className="swatch-chip" style={{ background: INK_COLORS[key].hex }} />
+              <span className="swatch-name">{INK_COLORS[key].label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      {error && <p className="form-error">{error}</p>}
+      <div className="row">
+        <button className="btn" onClick={saveColors} disabled={!changed || busy !== null}>
+          {busy === "colors" ? "Saving…" : "Save colors"}
+        </button>
+        {changed && (
+          <button
+            className="link-btn"
+            onClick={() => {
+              setCard(shop.cardColor);
+              setInk(shop.inkColor);
+            }}
+          >
+            Undo
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 

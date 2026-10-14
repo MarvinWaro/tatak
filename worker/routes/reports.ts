@@ -51,6 +51,7 @@ interface OrderRow {
   item_count: number;
   stamps_awarded: number;
   stamps_used: number;
+  approved_via: string;
   card_id: string;
   code: string;
   nickname: string | null;
@@ -138,7 +139,7 @@ export function reportRoutes(router: Router): void {
     const [orders, items] = await env.DB.batch([
       env.DB.prepare(
         `SELECT o.id, o.created_at, o.status, o.is_reward, o.total_cents, o.item_count, o.stamps_awarded,
-                o.stamps_used, o.card_id, c.code, c.nickname
+                o.stamps_used, o.approved_via, o.card_id, c.code, c.nickname
          FROM orders o JOIN cards c ON c.id = o.card_id
          WHERE o.shop_id = ? AND o.created_at >= ? AND o.created_at < ?
          ORDER BY o.created_at DESC LIMIT ?`,
@@ -167,6 +168,7 @@ export function reportRoutes(router: Router): void {
       itemCount: o.item_count,
       stampsAwarded: o.stamps_awarded,
       stampsUsed: o.stamps_used,
+      approvedVia: o.approved_via,
       card: { id: o.card_id, code: o.code, nickname: o.nickname },
       items: byOrder.get(o.id) ?? [],
     }));

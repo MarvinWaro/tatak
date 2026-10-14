@@ -154,6 +154,27 @@ export function cardRoutes(router: Router): void {
     return json(toPublicShop(shop, menu.results));
   });
 
+  // The shop logo. The URL carries a version number, so browsers can keep it for a year.
+  router.get("/api/shops/:slug/logo", async ({ env, params }) => {
+    const logo = await env.DB.prepare(
+      `SELECT shop_logos.mime, shop_logos.data FROM shop_logos
+       JOIN shops ON shops.id = shop_logos.shop_id WHERE shops.slug = ?`,
+    )
+      .bind(params.slug.toLowerCase())
+      .first<{ mime: string; data: string }>();
+    if (!logo) return new Response("Not found", { status: 404 });
+    const bin = atob(logo.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Response(bytes, {
+      headers: {
+        "content-type": logo.mime,
+        "cache-control": "public, max-age=31536000, immutable",
+        "x-content-type-options": "nosniff",
+      },
+    });
+  });
+
   router.post("/api/shops/:slug/cards", async ({ env, req, params }) => {
     const shop = await findShopBySlug(env.DB, params.slug);
     const { nickname } = await readJson(req, createCardSchema);

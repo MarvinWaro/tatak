@@ -12,6 +12,7 @@ interface StampCardProps {
   timezone: string;
   /** How many of the newest stamps to animate in. */
   fresh?: number;
+  logoUrl?: string | null;
   className?: string;
 }
 
@@ -45,6 +46,7 @@ export function StampCard({
   timezone,
   fresh = 0,
   className = "",
+  logoUrl,
 }: StampCardProps) {
   const filled = Math.min(stamps, required);
   const extra = Math.max(0, stamps - required);
@@ -56,7 +58,10 @@ export function StampCard({
       aria-label={`${shopName} stamp card: ${filled} of ${required} stamps`}
     >
       <div className="ticket-head">
-        <span className="ticket-shop">{shopName}</span>
+        <span className="ticket-shop">
+          {logoUrl && <img className="ticket-logo" src={logoUrl} alt="" />}
+          {shopName}
+        </span>
         {code && <span className="ticket-code">Card {code}</span>}
       </div>
       <div className="ticket-grid" style={{ "--cols": cols } as CSSProperties}>

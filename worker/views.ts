@@ -8,6 +8,7 @@ import type {
   PublicShop,
   ShopSettings,
 } from "../shared/types";
+import { CARD_COLORS, type CardColor, INK_COLORS, type InkColor } from "../shared/theme";
 import type { ShopRow } from "./auth";
 import type { D1Database } from "./env";
 
@@ -48,6 +49,11 @@ export const toAdminMenuItem = (r: MenuRow): AdminMenuItem => ({
   sortOrder: r.sort_order,
 });
 
+const cardColorOf = (s: ShopRow): CardColor => (s.card_color in CARD_COLORS ? (s.card_color as CardColor) : "canary");
+const inkColorOf = (s: ShopRow): InkColor => (s.ink_color in INK_COLORS ? (s.ink_color as InkColor) : "violet");
+export const logoUrlOf = (s: ShopRow): string | null =>
+  s.logo_version > 0 ? `/api/shops/${s.slug}/logo?v=${s.logo_version}` : null;
+
 export const toPublicShop = (s: ShopRow, menu: MenuRow[]): PublicShop => ({
   slug: s.slug,
   name: s.name,
@@ -58,6 +64,9 @@ export const toPublicShop = (s: ShopRow, menu: MenuRow[]): PublicShop => ({
   openTime: s.open_time,
   closeTime: s.close_time,
   requirePin: s.require_pin === 1 && s.pin_hash !== null,
+  cardColor: cardColorOf(s),
+  inkColor: inkColorOf(s),
+  logoUrl: logoUrlOf(s),
   menu: menu.map(toPublicMenuItem),
 });
 
@@ -76,6 +85,9 @@ export const toShopSettings = (s: ShopRow): ShopSettings => ({
   closeTime: s.close_time,
   requirePin: s.require_pin === 1 && s.pin_hash !== null,
   hasPin: s.pin_hash !== null,
+  cardColor: cardColorOf(s),
+  inkColor: inkColorOf(s),
+  logoUrl: logoUrlOf(s),
 });
 
 export const toCardSummary = (c: CardRow): CardSummary => ({

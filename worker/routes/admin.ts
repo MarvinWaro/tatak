@@ -6,7 +6,9 @@ import { normalizeCode, ulid } from "../ids";
 import type { Router } from "../router";
 import {
   adjustSchema,
+  adminOrderSchema,
   blockSchema,
+  logoSchema,
   menuItemPatchSchema,
   menuItemSchema,
   reorderSchema,
@@ -50,6 +52,8 @@ export function adminRoutes(router: Router): void {
       open_time: patch.openTime === undefined ? shop.open_time : patch.openTime,
       close_time: patch.closeTime === undefined ? shop.close_time : patch.closeTime,
       require_pin: patch.requirePin === undefined ? shop.require_pin : patch.requirePin ? 1 : 0,
+      card_color: patch.cardColor ?? shop.card_color,
+      ink_color: patch.inkColor ?? shop.ink_color,
     };
     if (next.require_pin && !shop.pin_hash) {
       throw new HttpError(400, "Set a PIN first, then turn this on.", "no_pin");
@@ -62,7 +66,8 @@ export function adminRoutes(router: Router): void {
     }
     await env.DB.prepare(
       `UPDATE shops SET name = ?, reward_text = ?, stamps_required = ?, stamp_mode = ?, cooldown_minutes = ?,
-         max_stamps_per_day = ?, open_time = ?, close_time = ?, require_pin = ? WHERE id = ?`,
+         max_stamps_per_day = ?, open_time = ?, close_time = ?, require_pin = ?, card_color = ?, ink_color = ?
+       WHERE id = ?`,
     )
       .bind(
         next.name,
@@ -74,10 +79,37 @@ export function adminRoutes(router: Router): void {
         next.open_time,
         next.close_time,
         next.require_pin,
+        next.card_color,
+        next.ink_color,
         shop.id,
       )
       .run();
     return json(toShopSettings(next));
+  });
+
+  // Uploads the shop logo. The browser resizes it first, so it arrives small.
+  router.post("/api/admin/logo", async ({ env, req }) => {
+    const shop = await requireShop(env, req);
+    const { dataUrl } = await readJson(req, logoSchema);
+    const [, mime, data] = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(dataUrl)!;
+    const version = Date.now();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO shop_logos (shop_id, mime, data, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (shop_id) DO UPDATE SET mime = ?2, data = ?3, updated_at = ?4`,
+      ).bind(shop.id, mime, data, version),
+      env.DB.prepare("UPDATE shops SET logo_version = ? WHERE id = ?").bind(version, shop.id),
+    ]);
+    return json(toShopSettings({ ...shop, logo_version: version }));
+  });
+
+  router.delete("/api/admin/logo", async ({ env, req }) => {
+    const shop = await requireShop(env, req);
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM shop_logos WHERE shop_id = ?").bind(shop.id),
+      env.DB.prepare("UPDATE shops SET logo_version = 0 WHERE id = ?").bind(shop.id),
+    ]);
+    return json(toShopSettings({ ...shop, logo_version: 0 }));
   });
 
   // Sets or changes the barista PIN. Saving a PIN also turns on "ask for the PIN".
@@ -189,6 +221,70 @@ export function adminRoutes(router: Router): void {
         .all<CardRow>();
     }
     return json(rows.results.map(toCustomer));
+  });
+
+  // Records a real purchase for a customer from the barista's own phone. It counts in sales,
+  // adds stamps by the shop's rules, and skips the customer-side limits (wait time, daily
+  // limit, opening hours) because the barista is entering it himself.
+  router.post("/api/admin/customers/:id/orders", async ({ env, req, params }) => {
+    const shop = await requireShop(env, req);
+    const body = await readJson(req, adminOrderSchema);
+    const now = Date.now();
+    const at = body.at ?? now;
+    if (at > now + 5 * 60000) throw new HttpError(400, "The purchase time can't be in the future.");
+    if (at < now - 90 * 86400000) {
+      throw new HttpError(400, "That's more than 90 days ago. Use \"Add stamps only\" for old purchases.");
+    }
+
+    const card = await env.DB.prepare("SELECT * FROM cards WHERE id = ? AND shop_id = ?")
+      .bind(params.id, shop.id)
+      .first<CardRow>();
+    if (!card) throw new HttpError(404, "Customer not found.");
+
+    const qtyById = new Map<string, number>();
+    for (const line of body.items) qtyById.set(line.id, (qtyById.get(line.id) ?? 0) + line.qty);
+    const ids = [...qtyById.keys()];
+    const menu = (
+      await env.DB.prepare(
+        `SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items
+         WHERE shop_id = ? AND is_archived = 0 AND id IN (${ids.map(() => "?").join(",")})`,
+      )
+        .bind(shop.id, ...ids)
+        .all<MenuRow>()
+    ).results;
+    if (menu.length !== ids.length) throw new HttpError(409, "Something in this purchase was removed from the menu.");
+
+    let totalCents = 0;
+    let itemCount = 0;
+    let stampItems = 0;
+    for (const item of menu) {
+      const qty = qtyById.get(item.id)!;
+      totalCents += item.price_cents * qty;
+      itemCount += qty;
+      if (item.earns_stamp) stampItems += qty;
+    }
+    const stamps = shop.stamp_mode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
+
+    const orderId = ulid(at);
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO orders (id, shop_id, card_id, status, is_reward, approved_via, total_cents, item_count, stamps_awarded, created_at)
+         VALUES (?, ?, ?, 'approved', 0, 'admin', ?, ?, ?, ?)`,
+      ).bind(orderId, shop.id, card.id, totalCents, itemCount, stamps, at),
+      ...menu.map((item) =>
+        env.DB.prepare(
+          `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(ulid(at), orderId, item.id, item.name, item.price_cents, qtyById.get(item.id)!, item.earns_stamp),
+      ),
+      env.DB.prepare(
+        `UPDATE cards SET stamps = stamps + ?1, lifetime_stamps = lifetime_stamps + ?1,
+           last_visit_at = MAX(COALESCE(last_visit_at, 0), ?2) WHERE id = ?3`,
+      ).bind(stamps, at, card.id),
+    ]);
+
+    const updated = await env.DB.prepare("SELECT * FROM cards WHERE id = ?").bind(card.id).first<CardRow>();
+    return json({ customer: toCustomer(updated!), stampsAdded: stamps, totalCents }, 201);
   });
 
   router.post("/api/admin/customers/:id/adjust", async ({ env, req, params }) => {

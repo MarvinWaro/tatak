@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { ShopSettings } from "../../../shared/types";
 import { Icon } from "../../components/Icon";
 import { Link } from "../../lib/router";
+import { useShopTheme } from "../../lib/theme";
 import { useApi } from "../../lib/useApi";
 
 /** A printable poster with the shop's QR code. Tape it to the cart. */
@@ -21,6 +22,7 @@ export function Poster() {
   useEffect(() => {
     if (shop) document.title = `QR poster | ${shop.name}`;
   }, [shop]);
+  useShopTheme(shop?.cardColor, shop?.inkColor);
 
   if (error) return <p className="form-error">{error}</p>;
   if (!shop) return <div className="skeleton" style={{ height: 400, margin: 24 }} />;
@@ -38,6 +40,7 @@ export function Poster() {
         </button>
       </div>
       <div className="poster-sheet">
+        {shop.logoUrl && <img className="poster-logo" src={shop.logoUrl} alt="" />}
         <h1 className="poster-shop">{shop.name}</h1>
         <p className="poster-call">Scan for your stamp card</p>
         <div className="poster-qr" role="img" aria-label={`QR code for ${link}`}>

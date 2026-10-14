@@ -7,6 +7,7 @@ import { StampCard } from "../components/StampCard";
 import { ApiError, api, errorMessage } from "../lib/api";
 import { itemsText, peso, plural, timeOf, whenOf } from "../lib/format";
 import { backupSeenKey, cardKey, readItem, removeItem, writeItem } from "../lib/storage";
+import { useShopTheme } from "../lib/theme";
 
 type View =
   | { kind: "card" }
@@ -73,6 +74,7 @@ export function CustomerPage({ slug }: { slug: string }) {
   useEffect(() => {
     if (shop) document.title = `${shop.name} stamp card`;
   }, [shop]);
+  useShopTheme(shop?.cardColor, shop?.inkColor);
 
   const saveCard = (created: CardCreated) => {
     writeItem(cardKey(slug), created.token);
@@ -179,6 +181,16 @@ export function CustomerPage({ slug }: { slug: string }) {
   }
 }
 
+/** The shop's name, with its logo when it has one. */
+function ShopHeading({ shop, style }: { shop: PublicShop; style?: CSSProperties }) {
+  return (
+    <div className="shop-heading" style={style}>
+      {shop.logoUrl && <img className="shop-logo" src={shop.logoUrl} alt="" />}
+      <h1 className="shop-title">{shop.name}</h1>
+    </div>
+  );
+}
+
 /* ---------------- No card yet ---------------- */
 
 function NoCard({ shop, slug, onCard }: { shop: PublicShop; slug: string; onCard: (c: CardCreated) => void }) {
@@ -216,7 +228,7 @@ function NoCard({ shop, slug, onCard }: { shop: PublicShop; slug: string; onCard
 
   return (
     <main className="phone">
-      <h1 className="shop-title">{shop.name}</h1>
+      <ShopHeading shop={shop} />
       <p className="muted" style={{ margin: "6px 0 20px" }}>
         Digital stamp card
       </p>
@@ -227,6 +239,7 @@ function NoCard({ shop, slug, onCard }: { shop: PublicShop; slug: string; onCard
         stampDates={[]}
         rewardText={shop.rewardText}
         timezone={shop.timezone}
+        logoUrl={shop.logoUrl}
       />
 
       {mode === "new" ? (
@@ -373,9 +386,7 @@ function CardHome({
 
   return (
     <main className="phone">
-      <h1 className="shop-title" style={{ marginBottom: 20 }}>
-        {shop.name}
-      </h1>
+      <ShopHeading shop={shop} style={{ marginBottom: 20 }} />
       <StampCard
         shopName={card.nickname ? `${card.nickname}'s card` : shop.name}
         code={card.code}
@@ -384,6 +395,7 @@ function CardHome({
         stampDates={view.stampDates}
         rewardText={shop.rewardText}
         timezone={shop.timezone}
+        logoUrl={shop.logoUrl}
       />
       <p className="card-status">{status}</p>
       {shop.openTime && shop.closeTime && (
@@ -901,6 +913,7 @@ function Done({ result, rewardItem, onClose }: { result: OrderResult; rewardItem
         rewardText={shop.rewardText}
         timezone={shop.timezone}
         fresh={fresh}
+        logoUrl={shop.logoUrl}
       />
       {result.limitNote && (
         <p className="form-note" style={{ marginTop: 16 }}>

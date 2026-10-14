@@ -87,6 +87,9 @@ export interface ShopRow {
   require_pin: number;
   pin_fail_count: number;
   pin_fail_window_start: number;
+  card_color: string;
+  ink_color: string;
+  logo_version: number;
   created_at: number;
 }
 

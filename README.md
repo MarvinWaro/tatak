@@ -84,6 +84,13 @@ These limits in **Settings** add more protection either way:
 
 Each order records how it was approved in `approved_via`: `pin` or `tap`.
 
+## Card design
+
+In **Settings → Card design**, each shop can upload a logo and pick a card color and a stamp color. Customers' card pages, the barista screen and the QR poster use them; the admin screens keep Tatak's own colors.
+
+- Colors come from a fixed set in `shared/theme.ts`. Every card color is light and every stamp color is dark, so any pair stays readable.
+- The browser shrinks logos to 256 pixels before upload. They're stored in the `shop_logos` table and served from `/api/shops/<slug>/logo` with a version number, so phones cache them.
+
 ## Customer cards
 
 - A card is created when the customer taps **Get my stamp card**. Their phone keeps a 16-character backup code; the server stores only its SHA-256 hash.

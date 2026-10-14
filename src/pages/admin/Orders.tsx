@@ -139,6 +139,7 @@ function OrderRow({ order, timezone, onChanged }: { order: AdminOrder; timezone:
         <div className="small muted">
           {who}, {effect}{" "}
           {order.isReward && <span className="tag tag--bond">Free drink</span>}{" "}
+          {order.approvedVia === "admin" && <span className="tag tag--grey">Added by barista</span>}{" "}
           {voided && <span className="tag tag--danger">Voided</span>}
         </div>
       </div>

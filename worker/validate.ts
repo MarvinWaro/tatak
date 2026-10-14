@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CARD_COLOR_KEYS, INK_COLOR_KEYS } from "../shared/theme";
 
 const time = z
   .string()
@@ -97,6 +98,8 @@ export const shopSettingsSchema = z
     openTime: time,
     closeTime: time,
     requirePin: z.boolean(),
+    cardColor: z.enum(CARD_COLOR_KEYS),
+    inkColor: z.enum(INK_COLOR_KEYS),
   })
   .partial()
   .refine(
@@ -131,6 +134,13 @@ export const menuItemPatchSchema = z
 
 export const reorderSchema = z.object({ ids: z.array(z.string().min(1).max(40)).min(1).max(200) });
 
+// A purchase the barista records for a customer (forgot phone, no signal, and so on).
+export const adminOrderSchema = z.object({
+  items: orderSchema.shape.items,
+  /** When it was bought, in UTC milliseconds. Defaults to now. */
+  at: z.number().int().positive().optional(),
+});
+
 export const adjustSchema = z.object({
   delta: z
     .number()
@@ -139,6 +149,14 @@ export const adjustSchema = z.object({
     .max(30)
     .refine((v) => v !== 0, "Add or remove at least one stamp."),
   note: z.string().trim().max(120).optional(),
+});
+
+// A small image, already resized in the browser. 200,000 base64 characters is about 150 KB.
+export const logoSchema = z.object({
+  dataUrl: z
+    .string()
+    .max(200_100, "That image is too big. Use a smaller picture.")
+    .regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/, "Use a PNG, JPG or WebP image."),
 });
 
 export const blockSchema = z.object({ blocked: z.boolean() });

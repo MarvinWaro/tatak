@@ -1,4 +1,5 @@
 // Shapes returned by the API. Shared by the Worker and the React app.
+import type { CardColor, InkColor } from "./theme";
 
 export type StampMode = "per_cup" | "per_order";
 
@@ -20,6 +21,10 @@ export interface PublicShop {
   closeTime: string | null;
   /** When true, the barista types a 4-digit PIN after the hold to approve a stamp. */
   requirePin: boolean;
+  cardColor: CardColor;
+  inkColor: InkColor;
+  /** Versioned URL of the shop's logo, or null when there is none. */
+  logoUrl: string | null;
   menu: PublicMenuItem[];
 }
 
@@ -80,6 +85,9 @@ export interface ShopSettings {
   closeTime: string | null;
   requirePin: boolean;
   hasPin: boolean;
+  cardColor: CardColor;
+  inkColor: InkColor;
+  logoUrl: string | null;
 }
 
 export interface AdminMenuItem extends PublicMenuItem {
@@ -114,6 +122,8 @@ export interface AdminOrder {
   itemCount: number;
   stampsAwarded: number;
   stampsUsed: number;
+  /** "tap", "pin", or "admin" when the barista recorded it from his own phone. */
+  approvedVia: string;
   card: { id: string; code: string; nickname: string | null };
   items: { name: string; qty: number; priceCents: number }[];
 }
