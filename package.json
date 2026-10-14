@@ -1,0 +1,32 @@
+{
+  "name": "tatak",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Free digital stamp card for coffee stalls. React + Cloudflare Workers + D1.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite build && vite preview",
+    "deploy": "vite build && wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
+    "db:migrate:local": "wrangler d1 migrations apply tatak --local",
+    "db:migrate:remote": "wrangler d1 migrations apply tatak --remote"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.9.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.0.0",
+    "wrangler": "^4.24.0"
+  }
+}
