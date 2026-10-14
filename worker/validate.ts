@@ -26,7 +26,13 @@ export const restoreCardSchema = z.object({
   code: z.string().trim().min(1, "Enter your backup code.").max(40),
 });
 
+const baristaPin = z
+  .string()
+  .regex(/^\d{4}$/, "The PIN is 4 numbers.")
+  .optional();
+
 export const orderSchema = z.object({
+  pin: baristaPin,
   items: z
     .array(
       z.object({
@@ -38,7 +44,16 @@ export const orderSchema = z.object({
     .max(15, "Keep an order to 15 different items or fewer."),
 });
 
-export const redeemSchema = z.object({ itemId: z.string().min(1).max(40) });
+export const redeemSchema = z.object({ itemId: z.string().min(1).max(40), pin: baristaPin });
+
+const EASY_PINS = new Set(["0123", "1234", "2345", "3456", "4567", "5678", "6789", "9876", "8765", "7654", "6543", "5432", "4321", "3210"]);
+
+export const setPinSchema = z.object({
+  pin: z
+    .string()
+    .regex(/^\d{4}$/, "Use exactly 4 numbers.")
+    .refine((v) => !/^(\d)\1{3}$/.test(v) && !EASY_PINS.has(v), "Pick a PIN that's harder to guess than 1234 or 0000."),
+});
 
 export const slugSchema = z
   .string()
@@ -81,6 +96,7 @@ export const shopSettingsSchema = z
     maxStampsPerDay: z.number().int().min(0).max(100, "Keep the daily limit to 100 or fewer."),
     openTime: time,
     closeTime: time,
+    requirePin: z.boolean(),
   })
   .partial()
   .refine(

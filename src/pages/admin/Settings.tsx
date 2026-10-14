@@ -42,6 +42,7 @@ export function Settings() {
         </div>
       </section>
 
+      <PinSettings />
       <ShopForm />
       <PasswordForm />
 
@@ -55,6 +56,92 @@ export function Settings() {
         </button>
       </section>
     </div>
+  );
+}
+
+/** The barista PIN: typed on the customer's phone after the hold, so customers can't stamp themselves. */
+function PinSettings() {
+  const { shop, setShop } = useShop();
+  const toast = useToast();
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const savePin = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api<ShopSettings>("/api/admin/pin", { method: "POST", body: { pin } });
+      setShop(next);
+      setPin("");
+      toast(shop.hasPin ? "PIN changed" : "PIN saved and turned on");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggle = async (requirePin: boolean) => {
+    setError(null);
+    try {
+      setShop(await api<ShopSettings>("/api/admin/shop", { method: "PATCH", body: { requirePin } }));
+      toast(requirePin ? "PIN turned on" : "PIN turned off");
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const status = shop.requirePin
+    ? "On. After holding the button on the customer's phone, you type this PIN to approve the stamp."
+    : shop.hasPin
+      ? "Off. Anyone holding the phone can stamp by holding the button."
+      : "Not set yet. Anyone holding the phone can stamp by holding the button. Set a PIN so only you can approve stamps.";
+
+  return (
+    <section className="panel stack" style={{ "--gap": "12px" } as CSSProperties}>
+      <h2 className="panel-title" style={{ margin: 0 }}>
+        Barista PIN
+      </h2>
+      <p className="small">{status}</p>
+      {shop.hasPin && (
+        <label className="switch">
+          <input type="checkbox" checked={shop.requirePin} onChange={(e) => toggle(e.target.checked)} />
+          Ask for the PIN when stamping
+        </label>
+      )}
+      <form
+        className="row wrap"
+        style={{ alignItems: "flex-end" }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void savePin();
+        }}
+      >
+        <div className="field" style={{ width: 160 }}>
+          <label htmlFor="pin">{shop.hasPin ? "New PIN" : "PIN"}</label>
+          <input
+            id="pin"
+            className="input input--code"
+            type="password"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={4}
+            pattern="[0-9]{4}"
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            required
+          />
+        </div>
+        <button className="btn" type="submit" disabled={busy || pin.length !== 4}>
+          {busy ? "Saving…" : shop.hasPin ? "Change PIN" : "Set PIN"}
+        </button>
+      </form>
+      {error && <p className="form-error">{error}</p>}
+      <p className="field-hint">
+        4 numbers. Changing it stops the old PIN right away. After 5 wrong tries, that customer's card waits 15 minutes.
+      </p>
+    </section>
   );
 }
 

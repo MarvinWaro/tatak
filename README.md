@@ -25,9 +25,10 @@ You need Node.js 20 or newer.
 
 ```bash
 npm install
-npm run db:migrate:local   # creates the tables in a local database
 npm run dev                # http://localhost:5173
 ```
+
+`npm run dev` first applies any new database migrations to your local database (type **Y** if it asks), then starts the app.
 
 Open http://localhost:5173, choose **Set up my shop**, add a few menu items, then open your customer link (`/s/your-shop`) in a second browser or a private window to act as a customer.
 
@@ -65,16 +66,23 @@ The free plan resets daily at 00:00 UTC, which is 8:00 AM in Manila.
 
 That's room for roughly 8,000 stamped orders a day, so a busy stall with a few hundred uses a small slice. If the limit is ever reached, the app shows "Stamps work again after 8:00 AM" instead of an error page. The paid plan is US$5/month if you outgrow it.
 
-## How the barista approval works (and its limit)
+## How the barista approves a stamp
 
-The barista approves by pressing and holding a button on the customer's own phone. That keeps the stall hardware-free, but a customer could press it themselves. These guards limit the damage, and all are in **Settings**:
+The customer shows their phone. The barista presses and holds **Hold to stamp** until the ring fills, then types the shop's **4-digit barista PIN** on the keypad. The stamp is saved only if the PIN is right.
+
+- **Set the PIN** in **Settings → Barista PIN**. Saving a PIN turns it on. It stays the same every day until you change it, and changing it stops the old one right away.
+- **The PIN is never stored on the customer's phone.** It's checked by the server each time, and saved only as a hash (like a password).
+- **Wrong PINs:** after 5 wrong tries on one card, that card waits 15 minutes. After 10 wrong tries across the whole shop within 10 minutes, PIN stamping pauses for 10 minutes. If that happens, change the PIN.
+- **Turn it off** with the "Ask for the PIN when stamping" switch. Then holding the button is enough, which is faster but lets customers stamp themselves.
+
+These limits in **Settings** add more protection either way:
 
 - **Minutes between stamped orders** per card (default 10).
 - **Most stamps per card per day** (default 5). Orders past the limit are still saved for sales, but get no extra stamps.
 - **Opening hours**: stamps only work during the hours you set.
-- **Void and pause**: every order shows in **Orders** with its time, so the barista can void a fake one (stamps come off) or pause a card in **Customers**.
+- **Void and pause**: every order shows in **Orders** with its time, so you can void a wrong one (stamps come off) or pause a card in **Customers**.
 
-Every order records `approved_via = 'tap'`. A PIN or NFC tap can be added later as another value without changing the database.
+Each order records how it was approved in `approved_via`: `pin` or `tap`.
 
 ## Customer cards
 
@@ -110,3 +118,4 @@ src/
 - Passwords use PBKDF2-SHA256 with 20,000 iterations to stay inside the free plan's ~10 ms CPU per request. The iteration count is saved inside each hash, so you can raise `PBKDF2_ITERATIONS` in `worker/auth.ts` later without breaking old logins. Five wrong passwords lock the login for 10 minutes.
 - The font is Archivo from Google Fonts. Without internet access to Google Fonts, the app falls back to the phone's system font.
 - `npm run typecheck` checks both the app and the Worker.
+- When you pull changes that add a file to `migrations/`, run `npm run db:migrate:remote` before deploying so the live database gets the new columns.

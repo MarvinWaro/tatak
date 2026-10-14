@@ -1,6 +1,6 @@
 // Customer-facing routes: open a shop, create or restore a card, order, and redeem.
 import type { CardCreated, OrderResult } from "../../shared/types";
-import type { ShopRow } from "../auth";
+import { type ShopRow, verifyPassword } from "../auth";
 import type { D1Database, Env } from "../env";
 import { HttpError, json, readJson } from "../http";
 import { normalizeCode, randomCode, sha256Hex, ulid } from "../ids";
@@ -22,6 +22,11 @@ import {
 import { type CardRow, type MenuRow, MENU_SQL, loadCardView, toPublicShop } from "../views";
 
 const CARD_HEADER = "x-card-token";
+// Wrong-PIN limits. A 4-digit PIN has only 10,000 combinations, so guessing must be slow.
+const CARD_PIN_TRIES = 5; // wrong PINs on one card before it is locked
+const CARD_PIN_LOCK_MINUTES = 15;
+const SHOP_PIN_TRIES = 10; // wrong PINs across the whole shop before PIN stamping pauses
+const SHOP_PIN_WINDOW_MINUTES = 10;
 const BACKUP_CODE_LENGTH = 16; // 80 random bits
 const CARD_CODE_LENGTH = 6;
 
@@ -37,8 +42,8 @@ async function requireCard(env: Env, req: Request): Promise<{ card: CardRow; sho
   if (!token) throw new HttpError(401, "This phone doesn't have a card yet.", "no_card");
   const row = await env.DB.prepare(
     `SELECT cards.id AS card_id, cards.code, cards.nickname, cards.stamps, cards.lifetime_stamps,
-            cards.rewards_redeemed, cards.is_blocked, cards.last_visit_at, cards.created_at AS card_created_at,
-            shops.*
+            cards.rewards_redeemed, cards.is_blocked, cards.last_visit_at, cards.pin_failures, cards.pin_locked_until,
+            cards.created_at AS card_created_at, shops.*
      FROM cards JOIN shops ON shops.id = cards.shop_id WHERE cards.secret_hash = ?`,
   )
     .bind(await sha256Hex(normalizeCode(token)))
@@ -54,6 +59,8 @@ async function requireCard(env: Env, req: Request): Promise<{ card: CardRow; sho
     rewards_redeemed: row.rewards_redeemed,
     is_blocked: row.is_blocked,
     last_visit_at: row.last_visit_at,
+    pin_failures: row.pin_failures,
+    pin_locked_until: row.pin_locked_until,
     created_at: row.card_created_at,
   };
   return { card, shop: row };
@@ -76,6 +83,61 @@ function assertCanStamp(shop: ShopRow, card: CardRow, now: number): void {
       );
     }
   }
+}
+
+/**
+ * When the shop requires a PIN, checks the barista's PIN and returns "pin"; otherwise returns "tap".
+ * Wrong PINs are counted per card and per shop, and lock further tries for a while.
+ */
+async function checkBaristaPin(
+  db: D1Database,
+  shop: ShopRow,
+  card: CardRow,
+  pin: string | undefined,
+  now: number,
+): Promise<"tap" | "pin"> {
+  if (!shop.require_pin || !shop.pin_hash) return "tap";
+
+  if (card.pin_locked_until > now) {
+    throw new HttpError(
+      429,
+      `Too many wrong PINs on this card. Try again at ${formatTime(card.pin_locked_until, shop.timezone)}.`,
+      "pin_locked",
+    );
+  }
+  const windowEnd = shop.pin_fail_window_start + SHOP_PIN_WINDOW_MINUTES * 60000;
+  const windowActive = now < windowEnd;
+  if (windowActive && shop.pin_fail_count >= SHOP_PIN_TRIES) {
+    throw new HttpError(
+      429,
+      `Too many wrong PINs at ${shop.name}. PIN stamping is paused until ${formatTime(windowEnd, shop.timezone)}.`,
+      "pin_locked",
+    );
+  }
+  if (!pin) throw new HttpError(400, "Barista: enter your PIN.", "pin_required");
+
+  if (await verifyPassword(pin, shop.pin_hash)) {
+    if (card.pin_failures > 0) {
+      await db.prepare("UPDATE cards SET pin_failures = 0 WHERE id = ?").bind(card.id).run();
+    }
+    return "pin";
+  }
+
+  const failures = card.pin_failures + 1;
+  const lock = failures >= CARD_PIN_TRIES;
+  await db.batch([
+    db
+      .prepare("UPDATE cards SET pin_failures = ?, pin_locked_until = ? WHERE id = ?")
+      .bind(lock ? 0 : failures, lock ? now + CARD_PIN_LOCK_MINUTES * 60000 : 0, card.id),
+    windowActive
+      ? db.prepare("UPDATE shops SET pin_fail_count = pin_fail_count + 1 WHERE id = ?").bind(shop.id)
+      : db.prepare("UPDATE shops SET pin_fail_count = 1, pin_fail_window_start = ? WHERE id = ?").bind(now, shop.id),
+  ]);
+  if (lock) {
+    throw new HttpError(429, `Wrong PIN. This card is locked for ${CARD_PIN_LOCK_MINUTES} minutes.`, "pin_locked");
+  }
+  const left = CARD_PIN_TRIES - failures;
+  throw new HttpError(403, `Wrong PIN. ${left} ${left === 1 ? "try" : "tries"} left.`, "wrong_pin");
 }
 
 async function getCardRow(db: D1Database, id: string): Promise<CardRow> {
@@ -150,6 +212,7 @@ export function cardRoutes(router: Router): void {
     const body = await readJson(req, orderSchema);
     const now = Date.now();
     assertCanStamp(shop, card, now);
+    const approvedVia = await checkBaristaPin(env.DB, shop, card, body.pin, now);
 
     // Merge duplicate lines (same item twice).
     const qtyById = new Map<string, number>();
@@ -210,8 +273,8 @@ export function cardRoutes(router: Router): void {
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO orders (id, shop_id, card_id, status, is_reward, approved_via, total_cents, item_count, stamps_awarded, created_at)
-         VALUES (?, ?, ?, 'approved', 0, 'tap', ?, ?, ?, ?)`,
-      ).bind(orderId, shop.id, card.id, totalCents, itemCount, added, now),
+         VALUES (?, ?, ?, 'approved', 0, ?, ?, ?, ?, ?)`,
+      ).bind(orderId, shop.id, card.id, approvedVia, totalCents, itemCount, added, now),
       ...menu.map((item) =>
         env.DB.prepare(
           `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp)
@@ -234,7 +297,7 @@ export function cardRoutes(router: Router): void {
   // Uses a full card for one free drink. The barista holds "Hold to give" on the customer's phone.
   router.post("/api/card/redeem", async ({ env, req }) => {
     const { card, shop } = await requireCard(env, req);
-    const { itemId } = await readJson(req, redeemSchema);
+    const { itemId, pin } = await readJson(req, redeemSchema);
     const now = Date.now();
     assertCanStamp(shop, card, now);
 
@@ -246,6 +309,11 @@ export function cardRoutes(router: Router): void {
       .first<MenuRow>();
     if (!item) throw new HttpError(409, "That drink is sold out. Pick another one.", "menu_changed");
     if (!item.earns_stamp) throw new HttpError(400, "Pick a drink that's part of the stamp card.");
+    if (card.stamps < shop.stamps_required) {
+      const missing = shop.stamps_required - card.stamps;
+      throw new HttpError(409, `You need ${missing} more ${missing === 1 ? "stamp" : "stamps"} for ${shop.reward_text}.`, "not_enough_stamps");
+    }
+    const approvedVia = await checkBaristaPin(env.DB, shop, card, pin, now);
 
     const required = shop.stamps_required;
     const orderId = ulid(now);
@@ -255,9 +323,9 @@ export function cardRoutes(router: Router): void {
     const [insertRes] = await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO orders (id, shop_id, card_id, status, is_reward, approved_via, total_cents, item_count, stamps_awarded, stamps_used, created_at)
-         SELECT ?1, ?2, id, 'approved', 1, 'tap', 0, 1, 0, ?3, ?4 FROM cards
+         SELECT ?1, ?2, id, 'approved', 1, ?6, 0, 1, 0, ?3, ?4 FROM cards
          WHERE id = ?5 AND stamps >= ?3 AND is_blocked = 0`,
-      ).bind(orderId, shop.id, required, now, card.id),
+      ).bind(orderId, shop.id, required, now, card.id, approvedVia),
       env.DB.prepare(
         `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp)
          SELECT ?, id, ?, ?, 0, 1, 1 FROM orders WHERE id = ?`,

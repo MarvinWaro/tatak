@@ -83,6 +83,10 @@ export interface ShopRow {
   close_time: string | null;
   failed_logins: number;
   locked_until: number;
+  pin_hash: string | null;
+  require_pin: number;
+  pin_fail_count: number;
+  pin_fail_window_start: number;
   created_at: number;
 }
 

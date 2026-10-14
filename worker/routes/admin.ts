@@ -1,6 +1,6 @@
 // Barista admin: shop settings, menu, customers.
 import type { AdminCustomer } from "../../shared/types";
-import { type ShopRow, requireShop } from "../auth";
+import { type ShopRow, hashPassword, requireShop } from "../auth";
 import { HttpError, json, readJson } from "../http";
 import { normalizeCode, ulid } from "../ids";
 import type { Router } from "../router";
@@ -10,6 +10,7 @@ import {
   menuItemPatchSchema,
   menuItemSchema,
   reorderSchema,
+  setPinSchema,
   shopSettingsSchema,
 } from "../validate";
 import { type CardRow, type MenuRow, toAdminMenuItem, toShopSettings } from "../views";
@@ -48,7 +49,11 @@ export function adminRoutes(router: Router): void {
       max_stamps_per_day: patch.maxStampsPerDay ?? shop.max_stamps_per_day,
       open_time: patch.openTime === undefined ? shop.open_time : patch.openTime,
       close_time: patch.closeTime === undefined ? shop.close_time : patch.closeTime,
+      require_pin: patch.requirePin === undefined ? shop.require_pin : patch.requirePin ? 1 : 0,
     };
+    if (next.require_pin && !shop.pin_hash) {
+      throw new HttpError(400, "Set a PIN first, then turn this on.", "no_pin");
+    }
     if ((next.open_time === null) !== (next.close_time === null)) {
       throw new HttpError(400, "Set both opening and closing time, or leave both empty.");
     }
@@ -57,7 +62,7 @@ export function adminRoutes(router: Router): void {
     }
     await env.DB.prepare(
       `UPDATE shops SET name = ?, reward_text = ?, stamps_required = ?, stamp_mode = ?, cooldown_minutes = ?,
-         max_stamps_per_day = ?, open_time = ?, close_time = ? WHERE id = ?`,
+         max_stamps_per_day = ?, open_time = ?, close_time = ?, require_pin = ? WHERE id = ?`,
     )
       .bind(
         next.name,
@@ -68,10 +73,24 @@ export function adminRoutes(router: Router): void {
         next.max_stamps_per_day,
         next.open_time,
         next.close_time,
+        next.require_pin,
         shop.id,
       )
       .run();
     return json(toShopSettings(next));
+  });
+
+  // Sets or changes the barista PIN. Saving a PIN also turns on "ask for the PIN".
+  router.post("/api/admin/pin", async ({ env, req }) => {
+    const shop = await requireShop(env, req);
+    const { pin } = await readJson(req, setPinSchema);
+    const pinHash = await hashPassword(pin);
+    await env.DB.prepare(
+      "UPDATE shops SET pin_hash = ?, require_pin = 1, pin_fail_count = 0, pin_fail_window_start = 0 WHERE id = ?",
+    )
+      .bind(pinHash, shop.id)
+      .run();
+    return json(toShopSettings({ ...shop, pin_hash: pinHash, require_pin: 1 }));
   });
 
   // ---- Menu ----

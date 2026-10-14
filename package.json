@@ -5,6 +5,7 @@
   "description": "Free digital stamp card for coffee stalls. React + Cloudflare Workers + D1.",
   "type": "module",
   "scripts": {
+    "predev": "wrangler d1 migrations apply tatak --local",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite build && vite preview",
