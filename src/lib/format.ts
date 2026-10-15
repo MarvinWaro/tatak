@@ -35,6 +35,10 @@ export const timeOf = (ms: number, tz: string) => fmt(tz, { hour: "numeric", min
 
 export const dayOf = (ms: number, tz: string) => fmt(tz, { month: "short", day: "numeric" }).format(ms);
 
+/** "Oct 14, 2026". */
+export const dateOf = (ms: number, tz: string) =>
+  fmt(tz, { month: "short", day: "numeric", year: "numeric" }).format(ms);
+
 /** "YYYY-MM-DD" in the shop's time zone. */
 export function dateKey(ms: number, tz: string): string {
   const parts = fmt(tz, { year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(ms);
@@ -70,6 +74,13 @@ export function formatDateKey(date: string, withWeekday = false): string {
   }).format(Date.UTC(y, m - 1, d));
 }
 
+/** "Today", "Yesterday", or "Mon, Oct 12" from a YYYY-MM-DD string. */
+export function dayLabel(date: string, today: string): string {
+  if (date === today) return "Today";
+  if (date === addDays(today, -1)) return "Yesterday";
+  return formatDateKey(date, true);
+}
+
 export function hourLabel(hour: number): string {
   const h = hour % 12 === 0 ? 12 : hour % 12;
   return `${h}${hour < 12 ? "a" : "p"}`;
@@ -77,4 +88,15 @@ export function hourLabel(hour: number): string {
 
 export function itemsText(items: { name: string; qty: number }[]): string {
   return items.map((i) => (i.qty > 1 ? `${i.qty}× ${i.name}` : i.name)).join(", ");
+}
+
+/** "Ana (K7Q4MZ)" or "Card K7Q4MZ". */
+export function cardLabel(card: { code: string; nickname: string | null }): string {
+  return card.nickname ? `${card.nickname} (${card.code})` : `Card ${card.code}`;
+}
+
+/** What an order did to the card: "+2 stamps", "Used 10 stamps" or "No stamps". */
+export function stampEffect(order: { isReward: boolean; stampsUsed: number; stampsAwarded: number }): string {
+  if (order.isReward) return `Used ${order.stampsUsed} stamps`;
+  return order.stampsAwarded > 0 ? `+${plural(order.stampsAwarded, "stamp", "stamps")}` : "No stamps";
 }

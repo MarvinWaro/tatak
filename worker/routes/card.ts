@@ -4,6 +4,7 @@ import { type ShopRow, verifyPassword } from "../auth";
 import type { D1Database, Env } from "../env";
 import { HttpError, json, readJson } from "../http";
 import { normalizeCode, randomCode, sha256Hex, ulid } from "../ids";
+import { PROMO_USED_MESSAGE, isUniqueError, priceOrder, promoStatements, requireReadyPromo } from "../promos";
 import type { Router } from "../router";
 import {
   formatHHMM,
@@ -19,7 +20,7 @@ import {
   restoreCardSchema,
   updateCardSchema,
 } from "../validate";
-import { type CardRow, type MenuRow, MENU_SQL, loadCardView, toPublicShop } from "../views";
+import { type CardRow, type MenuRow, type PromoRow, MENU_SQL, PROMOS_SQL, loadCardView, toPublicShop } from "../views";
 
 const CARD_HEADER = "x-card-token";
 // Wrong-PIN limits. A 4-digit PIN has only 10,000 combinations, so guessing must be slow.
@@ -27,7 +28,10 @@ const CARD_PIN_TRIES = 5; // wrong PINs on one card before it is locked
 const CARD_PIN_LOCK_MINUTES = 15;
 const SHOP_PIN_TRIES = 10; // wrong PINs across the whole shop before PIN stamping pauses
 const SHOP_PIN_WINDOW_MINUTES = 10;
-const BACKUP_CODE_LENGTH = 16; // 80 random bits
+// 40 random bits: about a trillion codes. Guessing one would take far more requests than the
+// Workers plan allows, and a guessed code only gets a stamp card. Older cards keep their
+// 16-character codes; both lengths work because the server looks codes up by hash.
+const BACKUP_CODE_LENGTH = 8;
 const CARD_CODE_LENGTH = 6;
 
 async function findShopBySlug(db: D1Database, slug: string): Promise<ShopRow> {
@@ -150,20 +154,45 @@ export function cardRoutes(router: Router): void {
   // Shop info and menu, shown before the customer has a card.
   router.get("/api/shops/:slug", async ({ env, params }) => {
     const shop = await findShopBySlug(env.DB, params.slug);
-    const menu = await env.DB.prepare(MENU_SQL).bind(shop.id).all<MenuRow>();
-    return json(toPublicShop(shop, menu.results));
+    const [menu, promos] = await env.DB.batch([
+      env.DB.prepare(MENU_SQL).bind(shop.id),
+      env.DB.prepare(PROMOS_SQL).bind(shop.id),
+    ]);
+    return json(toPublicShop(shop, menu.results as MenuRow[], promos.results as PromoRow[]));
+  });
+
+  // The shop logo. The URL carries a version number, so browsers can keep it for a year.
+  router.get("/api/shops/:slug/logo", async ({ env, params }) => {
+    const logo = await env.DB.prepare(
+      `SELECT shop_logos.mime, shop_logos.data FROM shop_logos
+       JOIN shops ON shops.id = shop_logos.shop_id WHERE shops.slug = ?`,
+    )
+      .bind(params.slug.toLowerCase())
+      .first<{ mime: string; data: string }>();
+    if (!logo) return new Response("Not found", { status: 404 });
+    const bin = atob(logo.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Response(bytes, {
+      headers: {
+        "content-type": logo.mime,
+        "cache-control": "public, max-age=31536000, immutable",
+        "x-content-type-options": "nosniff",
+      },
+    });
   });
 
   router.post("/api/shops/:slug/cards", async ({ env, req, params }) => {
     const shop = await findShopBySlug(env.DB, params.slug);
     const { nickname } = await readJson(req, createCardSchema);
-    const backupCode = randomCode(BACKUP_CODE_LENGTH);
     const now = Date.now();
     const id = ulid(now);
-    const secretHash = await sha256Hex(backupCode);
 
-    // The short card code must be unique within the shop; retry on the rare collision.
+    // The card code (per shop) and the backup code (everywhere) must be unique;
+    // retry with fresh codes on the rare collision.
     for (let attempt = 0; attempt < 5; attempt++) {
+      const backupCode = randomCode(BACKUP_CODE_LENGTH);
+      const secretHash = await sha256Hex(backupCode);
       try {
         await env.DB.prepare(
           `INSERT INTO cards (id, shop_id, code, secret_hash, nickname, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -219,7 +248,7 @@ export function cardRoutes(router: Router): void {
     for (const line of body.items) qtyById.set(line.id, (qtyById.get(line.id) ?? 0) + line.qty);
     const ids = [...qtyById.keys()];
 
-    const [menuRes, lastRes, todayRes] = await env.DB.batch([
+    const [menuRes, lastRes, todayRes, promosRes, usedRes] = await env.DB.batch([
       env.DB.prepare(
         `SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items
          WHERE shop_id = ? AND is_archived = 0 AND is_available = 1 AND id IN (${ids.map(() => "?").join(",")})`,
@@ -232,6 +261,7 @@ export function cardRoutes(router: Router): void {
         `SELECT COALESCE(SUM(stamps_awarded), 0) AS n FROM orders
          WHERE card_id = ? AND status = 'approved' AND created_at >= ?`,
       ).bind(card.id, startOfLocalDay(now, shop.timezone)),
+      ...(body.promo ? promoStatements(env.DB, shop.id, card) : []),
     ]);
 
     const menu = menuRes.results as MenuRow[];
@@ -249,15 +279,8 @@ export function cardRoutes(router: Router): void {
       );
     }
 
-    let totalCents = 0;
-    let itemCount = 0;
-    let stampItems = 0;
-    for (const item of menu) {
-      const qty = qtyById.get(item.id)!;
-      totalCents += item.price_cents * qty;
-      itemCount += qty;
-      if (item.earns_stamp) stampItems += qty;
-    }
+    const promo = body.promo ? requireReadyPromo(promosRes, usedRes, card) : null;
+    const { lines, totalCents, discountCents, itemCount, stampItems } = priceOrder(menu, qtyById, promo, body.promo?.itemId);
     const earned = shop.stamp_mode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
     const today = (todayRes.results as { n: number }[])[0]?.n ?? 0;
     const added =
@@ -270,26 +293,53 @@ export function cardRoutes(router: Router): void {
         : null;
 
     const orderId = ulid(now);
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO orders (id, shop_id, card_id, status, is_reward, approved_via, total_cents, item_count, stamps_awarded, created_at)
-         VALUES (?, ?, ?, 'approved', 0, ?, ?, ?, ?, ?)`,
-      ).bind(orderId, shop.id, card.id, approvedVia, totalCents, itemCount, added, now),
-      ...menu.map((item) =>
+    // With a promo, the orders_promo_once index makes a second use fail, and the whole batch with it.
+    try {
+      await env.DB.batch([
         env.DB.prepare(
-          `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(ulid(now), orderId, item.id, item.name, item.price_cents, qtyById.get(item.id)!, item.earns_stamp),
-      ),
-      env.DB.prepare(
-        `UPDATE cards SET stamps = stamps + ?, lifetime_stamps = lifetime_stamps + ?, last_visit_at = ? WHERE id = ?`,
-      ).bind(added, added, now, card.id),
-    ]);
+          `INSERT INTO orders (id, shop_id, card_id, status, is_reward, approved_via, total_cents, item_count,
+             stamps_awarded, discount_cents, promo_step, promo_round, created_at)
+           VALUES (?, ?, ?, 'approved', 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(
+          orderId,
+          shop.id,
+          card.id,
+          approvedVia,
+          totalCents,
+          itemCount,
+          added,
+          discountCents,
+          promo?.step ?? null,
+          promo ? card.rewards_redeemed : null,
+          now,
+        ),
+        ...lines.map((line) =>
+          env.DB.prepare(
+            `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(ulid(now), orderId, line.item.id, line.item.name, line.priceCents, line.qty, line.item.earns_stamp),
+        ),
+        env.DB.prepare(
+          `UPDATE cards SET stamps = stamps + ?, lifetime_stamps = lifetime_stamps + ?, last_visit_at = ? WHERE id = ?`,
+        ).bind(added, added, now, card.id),
+      ]);
+    } catch (err) {
+      if (promo && isUniqueError(err)) throw new HttpError(409, PROMO_USED_MESSAGE, "promo_used");
+      throw err;
+    }
 
     const updated = await getCardRow(env.DB, card.id);
     const view = await loadCardView(env.DB, shop, updated);
     return json(
-      { ...view, orderId, stampsAdded: added, stampsEarned: earned, limitNote, approvedAt: now } satisfies OrderResult,
+      {
+        ...view,
+        orderId,
+        stampsAdded: added,
+        stampsEarned: earned,
+        limitNote,
+        approvedAt: now,
+        discountCents,
+      } satisfies OrderResult,
       201,
     );
   });
@@ -350,7 +400,15 @@ export function cardRoutes(router: Router): void {
     const updated = await getCardRow(env.DB, card.id);
     const view = await loadCardView(env.DB, shop, updated);
     return json(
-      { ...view, orderId, stampsAdded: 0, stampsEarned: 0, limitNote: null, approvedAt: now } satisfies OrderResult,
+      {
+        ...view,
+        orderId,
+        stampsAdded: 0,
+        stampsEarned: 0,
+        limitNote: null,
+        approvedAt: now,
+        discountCents: 0,
+      } satisfies OrderResult,
       201,
     );
   });

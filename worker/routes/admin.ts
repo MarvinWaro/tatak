@@ -1,19 +1,33 @@
 // Barista admin: shop settings, menu, customers.
-import type { AdminCustomer } from "../../shared/types";
+import { readyPromo } from "../../shared/promos";
+import type { AdminCustomer, Promo } from "../../shared/types";
 import { type ShopRow, hashPassword, requireShop } from "../auth";
+import type { Env } from "../env";
 import { HttpError, json, readJson } from "../http";
 import { normalizeCode, ulid } from "../ids";
+import { PROMO_USED_MESSAGE, isUniqueError, priceOrder, promoStatements, requireReadyPromo } from "../promos";
 import type { Router } from "../router";
 import {
   adjustSchema,
+  adminOrderSchema,
   blockSchema,
+  logoSchema,
   menuItemPatchSchema,
   menuItemSchema,
+  promosSchema,
   reorderSchema,
   setPinSchema,
   shopSettingsSchema,
 } from "../validate";
-import { type CardRow, type MenuRow, toAdminMenuItem, toShopSettings } from "../views";
+import {
+  type CardRow,
+  type MenuRow,
+  type PromoRow,
+  PROMOS_SQL,
+  toAdminMenuItem,
+  toPromo,
+  toShopSettings,
+} from "../views";
 
 const ADMIN_MENU_SQL = `SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items
   WHERE shop_id = ? AND is_archived = 0 ORDER BY sort_order, created_at`;
@@ -29,6 +43,12 @@ const toCustomer = (c: CardRow): AdminCustomer => ({
   lastVisitAt: c.last_visit_at,
   createdAt: c.created_at,
 });
+
+async function requireShopCard(env: Env, shopId: string, cardId: string): Promise<CardRow> {
+  const card = await env.DB.prepare("SELECT * FROM cards WHERE id = ? AND shop_id = ?").bind(cardId, shopId).first<CardRow>();
+  if (!card) throw new HttpError(404, "Customer not found.");
+  return card;
+}
 
 export function adminRoutes(router: Router): void {
   router.get("/api/admin/me", async ({ env, req }) => {
@@ -50,6 +70,8 @@ export function adminRoutes(router: Router): void {
       open_time: patch.openTime === undefined ? shop.open_time : patch.openTime,
       close_time: patch.closeTime === undefined ? shop.close_time : patch.closeTime,
       require_pin: patch.requirePin === undefined ? shop.require_pin : patch.requirePin ? 1 : 0,
+      card_color: patch.cardColor ?? shop.card_color,
+      ink_color: patch.inkColor ?? shop.ink_color,
     };
     if (next.require_pin && !shop.pin_hash) {
       throw new HttpError(400, "Set a PIN first, then turn this on.", "no_pin");
@@ -60,9 +82,22 @@ export function adminRoutes(router: Router): void {
     if (next.open_time && next.open_time === next.close_time) {
       throw new HttpError(400, "Opening and closing time can't be the same.");
     }
+    if (next.stamps_required < shop.stamps_required) {
+      const last = await env.DB.prepare("SELECT MAX(step) AS step FROM card_promos WHERE shop_id = ?")
+        .bind(shop.id)
+        .first<{ step: number | null }>();
+      if (last?.step != null && last.step >= next.stamps_required) {
+        throw new HttpError(
+          400,
+          `Stamp ${last.step} has a promo. Move or remove that promo first, then use fewer stamps.`,
+          "promo_in_the_way",
+        );
+      }
+    }
     await env.DB.prepare(
       `UPDATE shops SET name = ?, reward_text = ?, stamps_required = ?, stamp_mode = ?, cooldown_minutes = ?,
-         max_stamps_per_day = ?, open_time = ?, close_time = ?, require_pin = ? WHERE id = ?`,
+         max_stamps_per_day = ?, open_time = ?, close_time = ?, require_pin = ?, card_color = ?, ink_color = ?
+       WHERE id = ?`,
     )
       .bind(
         next.name,
@@ -74,10 +109,37 @@ export function adminRoutes(router: Router): void {
         next.open_time,
         next.close_time,
         next.require_pin,
+        next.card_color,
+        next.ink_color,
         shop.id,
       )
       .run();
     return json(toShopSettings(next));
+  });
+
+  // Uploads the shop logo. The browser resizes it first, so it arrives small.
+  router.post("/api/admin/logo", async ({ env, req }) => {
+    const shop = await requireShop(env, req);
+    const { dataUrl } = await readJson(req, logoSchema);
+    const [, mime, data] = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(dataUrl)!;
+    const version = Date.now();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO shop_logos (shop_id, mime, data, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (shop_id) DO UPDATE SET mime = ?2, data = ?3, updated_at = ?4`,
+      ).bind(shop.id, mime, data, version),
+      env.DB.prepare("UPDATE shops SET logo_version = ? WHERE id = ?").bind(version, shop.id),
+    ]);
+    return json(toShopSettings({ ...shop, logo_version: version }));
+  });
+
+  router.delete("/api/admin/logo", async ({ env, req }) => {
+    const shop = await requireShop(env, req);
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM shop_logos WHERE shop_id = ?").bind(shop.id),
+      env.DB.prepare("UPDATE shops SET logo_version = 0 WHERE id = ?").bind(shop.id),
+    ]);
+    return json(toShopSettings({ ...shop, logo_version: 0 }));
   });
 
   // Sets or changes the barista PIN. Saving a PIN also turns on "ask for the PIN".
@@ -166,7 +228,52 @@ export function adminRoutes(router: Router): void {
     return json(rows.results.map(toAdminMenuItem));
   });
 
+  // ---- Promos on the card ----
+
+  router.get("/api/admin/promos", async ({ env, req }) => {
+    const shop = await requireShop(env, req);
+    const rows = await env.DB.prepare(PROMOS_SQL).bind(shop.id).all<PromoRow>();
+    return json(rows.results.map(toPromo));
+  });
+
+  // Replaces all of the shop's promos at once. Orders keep their promo step, so old reports don't change.
+  router.post("/api/admin/promos", async ({ env, req }) => {
+    const shop = await requireShop(env, req);
+    const { promos } = await readJson(req, promosSchema);
+    const last = shop.stamps_required - 1;
+    const outside = promos.find((p) => p.step > last);
+    if (outside) {
+      throw new HttpError(400, `The card has ${shop.stamps_required} stamps. Put promos on stamps 1 to ${last}.`);
+    }
+    const sorted = [...promos].sort((a, b) => a.step - b.step);
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM card_promos WHERE shop_id = ?").bind(shop.id),
+      ...sorted.map((p) =>
+        env.DB.prepare("INSERT INTO card_promos (shop_id, step, percent_off, label) VALUES (?, ?, ?, ?)").bind(
+          shop.id,
+          p.step,
+          p.percentOff,
+          p.label,
+        ),
+      ),
+    ]);
+    return json(sorted satisfies Promo[]);
+  });
+
   // ---- Customers ----
+
+  // The promo a customer can use on their next purchase, for "Record a purchase".
+  router.get("/api/admin/customers/:id/promo", async ({ env, req, params }) => {
+    const shop = await requireShop(env, req);
+    const card = await requireShopCard(env, shop.id, params.id);
+    const [promos, used] = await env.DB.batch(promoStatements(env.DB, shop.id, card));
+    const promo = readyPromo(
+      (promos.results as PromoRow[]).map(toPromo),
+      card.stamps,
+      (used.results as { promo_step: number }[]).map((r) => r.promo_step),
+    );
+    return json({ promo });
+  });
 
   router.get("/api/admin/customers", async ({ env, req, url }) => {
     const shop = await requireShop(env, req);
@@ -189,6 +296,77 @@ export function adminRoutes(router: Router): void {
         .all<CardRow>();
     }
     return json(rows.results.map(toCustomer));
+  });
+
+  // Records a real purchase for a customer from the barista's own phone. It counts in sales,
+  // adds stamps by the shop's rules, and skips the customer-side limits (wait time, daily
+  // limit, opening hours) because the barista is entering it himself.
+  router.post("/api/admin/customers/:id/orders", async ({ env, req, params }) => {
+    const shop = await requireShop(env, req);
+    const body = await readJson(req, adminOrderSchema);
+    const now = Date.now();
+    const at = body.at ?? now;
+    if (at > now + 5 * 60000) throw new HttpError(400, "The purchase time can't be in the future.");
+    if (at < now - 90 * 86400000) {
+      throw new HttpError(400, "That's more than 90 days ago. Use \"Add stamps only\" for old purchases.");
+    }
+
+    const card = await requireShopCard(env, shop.id, params.id);
+
+    const qtyById = new Map<string, number>();
+    for (const line of body.items) qtyById.set(line.id, (qtyById.get(line.id) ?? 0) + line.qty);
+    const ids = [...qtyById.keys()];
+    const [menuRes, promosRes, usedRes] = await env.DB.batch([
+      env.DB.prepare(
+        `SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items
+         WHERE shop_id = ? AND is_archived = 0 AND id IN (${ids.map(() => "?").join(",")})`,
+      ).bind(shop.id, ...ids),
+      ...(body.promo ? promoStatements(env.DB, shop.id, card) : []),
+    ]);
+    const menu = menuRes.results as MenuRow[];
+    if (menu.length !== ids.length) throw new HttpError(409, "Something in this purchase was removed from the menu.");
+
+    const promo = body.promo ? requireReadyPromo(promosRes, usedRes, card) : null;
+    const { lines, totalCents, discountCents, itemCount, stampItems } = priceOrder(menu, qtyById, promo, body.promo?.itemId);
+    const stamps = shop.stamp_mode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
+
+    const orderId = ulid(at);
+    try {
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO orders (id, shop_id, card_id, status, is_reward, approved_via, total_cents, item_count,
+             stamps_awarded, discount_cents, promo_step, promo_round, created_at)
+           VALUES (?, ?, ?, 'approved', 0, 'admin', ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(
+          orderId,
+          shop.id,
+          card.id,
+          totalCents,
+          itemCount,
+          stamps,
+          discountCents,
+          promo?.step ?? null,
+          promo ? card.rewards_redeemed : null,
+          at,
+        ),
+        ...lines.map((line) =>
+          env.DB.prepare(
+            `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(ulid(at), orderId, line.item.id, line.item.name, line.priceCents, line.qty, line.item.earns_stamp),
+        ),
+        env.DB.prepare(
+          `UPDATE cards SET stamps = stamps + ?1, lifetime_stamps = lifetime_stamps + ?1,
+             last_visit_at = MAX(COALESCE(last_visit_at, 0), ?2) WHERE id = ?3`,
+        ).bind(stamps, at, card.id),
+      ]);
+    } catch (err) {
+      if (promo && isUniqueError(err)) throw new HttpError(409, PROMO_USED_MESSAGE, "promo_used");
+      throw err;
+    }
+
+    const updated = await env.DB.prepare("SELECT * FROM cards WHERE id = ?").bind(card.id).first<CardRow>();
+    return json({ customer: toCustomer(updated!), stampsAdded: stamps, totalCents }, 201);
   });
 
   router.post("/api/admin/customers/:id/adjust", async ({ env, req, params }) => {

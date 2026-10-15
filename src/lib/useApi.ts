@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { navigate } from "./router";
 
-/** Loads an admin API path; sends the person to log in if their session ended. */
+/** Loads an admin or super admin API path; sends the person to the right log-in page if their session ended. */
 export function useApi<T>(path: string | null) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +21,7 @@ export function useApi<T>(path: string | null) {
       .catch((err: unknown) => {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 401) {
-          navigate("/login", { replace: true });
+          navigate(path.startsWith("/api/super/") ? "/super/login" : "/login", { replace: true });
           return;
         }
         setError(err instanceof Error ? err.message : "Something went wrong.");

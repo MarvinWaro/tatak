@@ -87,6 +87,9 @@ export interface ShopRow {
   require_pin: number;
   pin_fail_count: number;
   pin_fail_window_start: number;
+  card_color: string;
+  ink_color: string;
+  logo_version: number;
   created_at: number;
 }
 
@@ -102,4 +105,52 @@ export async function requireShop(env: Env, req: Request): Promise<ShopRow> {
     .first<ShopRow>();
   if (!shop) throw new HttpError(401, "Your session ended. Log in again.", "unauthenticated");
   return shop;
+}
+
+// ---- Super admin ----
+// Separate accounts (super_admins) and sessions (super_sessions), made with `npm run superadmin`.
+// The cookie is only sent to /api/super/*, and lasts a week instead of a month.
+
+const SUPER_COOKIE = "tatak_super";
+const SUPER_COOKIE_PATH = "/api/super";
+const SUPER_SESSION_DAYS = 7;
+
+export interface SuperAdmin {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export async function createSuperSession(env: Env, req: Request, superAdminId: string): Promise<string> {
+  const token = randomToken();
+  const now = Date.now();
+  await env.DB.prepare(
+    "INSERT INTO super_sessions (token_hash, super_admin_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+  )
+    .bind(await sha256Hex(token), superAdminId, now + SUPER_SESSION_DAYS * 86400000, now)
+    .run();
+  return serializeCookie(req, SUPER_COOKIE, token, SUPER_SESSION_DAYS * 86400, SUPER_COOKIE_PATH);
+}
+
+export async function destroySuperSession(env: Env, req: Request): Promise<string> {
+  const token = getCookie(req, SUPER_COOKIE);
+  if (token) {
+    await env.DB.prepare("DELETE FROM super_sessions WHERE token_hash = ?").bind(await sha256Hex(token)).run();
+  }
+  return serializeCookie(req, SUPER_COOKIE, "", 0, SUPER_COOKIE_PATH);
+}
+
+/** The logged-in super admin for /api/super/* routes. Throws 401 when the session is missing or expired. */
+export async function requireSuperAdmin(env: Env, req: Request): Promise<SuperAdmin> {
+  const token = getCookie(req, SUPER_COOKIE);
+  if (!token) throw new HttpError(401, "Log in to continue.", "unauthenticated");
+  const admin = await env.DB.prepare(
+    `SELECT super_admins.id, super_admins.name, super_admins.email
+     FROM super_sessions JOIN super_admins ON super_admins.id = super_sessions.super_admin_id
+     WHERE super_sessions.token_hash = ? AND super_sessions.expires_at > ?`,
+  )
+    .bind(await sha256Hex(token), Date.now())
+    .first<SuperAdmin>();
+  if (!admin) throw new HttpError(401, "Your session ended. Log in again.", "unauthenticated");
+  return admin;
 }

@@ -1,9 +1,9 @@
 import { useState } from "react";
 import type { AdminOrder } from "../../../shared/types";
-import { Icon } from "../../components/Icon";
+import { DayPicker } from "../../components/DayPicker";
 import { useToast } from "../../components/Toast";
 import { api, errorMessage } from "../../lib/api";
-import { addDays, dateKey, formatDateKey, itemsText, peso, plural, timeOf } from "../../lib/format";
+import { cardLabel, dateKey, dayLabel, itemsText, peso, plural, stampEffect, timeOf } from "../../lib/format";
 import { useApi } from "../../lib/useApi";
 import { useShop } from "./AdminLayout";
 
@@ -34,7 +34,6 @@ export function Orders() {
     setNextBefore(page.nextBefore);
   };
 
-  const label = date === today ? "Today" : date === addDays(today, -1) ? "Yesterday" : formatDateKey(date, true);
   const paid = orders.filter((o) => o.status === "approved" && !o.isReward);
   const total = paid.reduce((s, o) => s + o.totalCents, 0);
 
@@ -42,34 +41,9 @@ export function Orders() {
     <div className="stack">
       <div className="spread wrap">
         <h1 className="page-title" style={{ margin: 0 }}>
-          {label}
+          {dayLabel(date, today)}
         </h1>
-        <div className="row" style={{ gap: 4 }}>
-          <button className="icon-btn" aria-label="Previous day" onClick={() => changeDate(addDays(date, -1))}>
-            <Icon name="back" />
-          </button>
-          <label className="sr-only" htmlFor="order-date">
-            Date
-          </label>
-          <input
-            id="order-date"
-            className="input"
-            type="date"
-            value={date}
-            max={today}
-            style={{ width: "auto" }}
-            onChange={(e) => e.target.value && changeDate(e.target.value)}
-          />
-          <button
-            className="icon-btn"
-            aria-label="Next day"
-            disabled={date >= today}
-            onClick={() => changeDate(addDays(date, 1))}
-            style={{ transform: "scaleX(-1)" }}
-          >
-            <Icon name="back" />
-          </button>
-        </div>
+        <DayPicker date={date} today={today} onChange={changeDate} />
       </div>
 
       {error && <p className="form-error">{error}</p>}
@@ -109,7 +83,7 @@ function OrderRow({ order, timezone, onChanged }: { order: AdminOrder; timezone:
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const who = order.card.nickname ? `${order.card.nickname} (${order.card.code})` : `Card ${order.card.code}`;
+  const who = cardLabel(order.card);
   const voided = order.status === "voided";
 
   const voidOrder = async () => {
@@ -125,11 +99,7 @@ function OrderRow({ order, timezone, onChanged }: { order: AdminOrder; timezone:
     }
   };
 
-  const effect = order.isReward
-    ? `Used ${order.stampsUsed} stamps`
-    : order.stampsAwarded > 0
-      ? `+${plural(order.stampsAwarded, "stamp", "stamps")}`
-      : "No stamps";
+  const effect = stampEffect(order);
 
   return (
     <li className={`list-row ${voided ? "list-row--voided" : ""}`}>
@@ -139,6 +109,12 @@ function OrderRow({ order, timezone, onChanged }: { order: AdminOrder; timezone:
         <div className="small muted">
           {who}, {effect}{" "}
           {order.isReward && <span className="tag tag--bond">Free drink</span>}{" "}
+          {order.promoStep !== null && (
+            <span className="tag">
+              Stamp {order.promoStep} promo{order.discountCents > 0 ? `, −${peso(order.discountCents)}` : ""}
+            </span>
+          )}{" "}
+          {order.approvedVia === "admin" && <span className="tag tag--grey">Added by barista</span>}{" "}
           {voided && <span className="tag tag--danger">Voided</span>}
         </div>
       </div>
@@ -158,7 +134,7 @@ function OrderRow({ order, timezone, onChanged }: { order: AdminOrder; timezone:
                       order.stampsAwarded > 0
                         ? ` and ${plural(order.stampsAwarded, "stamp", "stamps")} ${order.stampsAwarded === 1 ? "comes" : "come"} off ${who}`
                         : ""
-                    }.`}
+                    }.${order.promoStep !== null ? " The promo can be used again." : ""}`}
               </p>
               {error && <p className="form-error">{error}</p>}
               <div className="row">

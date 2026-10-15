@@ -1,7 +1,8 @@
 import { type CSSProperties, useState } from "react";
 import type { SalesReport } from "../../../shared/types";
 import { Icon } from "../../components/Icon";
-import { addDays, dateKey, formatDateKey, hourLabel, peso, plural } from "../../lib/format";
+import { addDays, dateKey, formatDateKey, hourLabel, peso, plural, whenOf } from "../../lib/format";
+import { Link } from "../../lib/router";
 import { useApi } from "../../lib/useApi";
 import { useShop } from "./AdminLayout";
 
@@ -129,6 +130,9 @@ function Report({ report, names }: { report: SalesReport; names: { now: string; 
     plural(t.stampsGiven, "stamp given", "stamps given"),
     plural(t.freeCups, "free drink", "free drinks"),
   ];
+  if (t.promosUsed > 0) {
+    facts.push(`${plural(t.promosUsed, "promo", "promos")} used (${peso(t.discountsCents)} off)`);
+  }
 
   return (
     <>
@@ -169,6 +173,10 @@ function Report({ report, names }: { report: SalesReport; names: { now: string; 
 
         <div className="stack">
           <section className="panel">
+            <h2 className="panel-title">Top buyers</h2>
+            <Buyers buyers={report.buyers} />
+          </section>
+          <section className="panel">
             <h2 className="panel-title">Busiest hours</h2>
             <Hours hours={report.hours} />
           </section>
@@ -180,6 +188,39 @@ function Report({ report, names }: { report: SalesReport; names: { now: string; 
           )}
         </div>
       </div>
+    </>
+  );
+}
+
+/** Customers who bought in the picked dates, most spent first. */
+function Buyers({ buyers }: { buyers: SalesReport["buyers"] }) {
+  const { shop } = useShop();
+  if (buyers.length === 0) return <p className="small muted">No buyers in these dates yet.</p>;
+  return (
+    <>
+      <ol className="buyers">
+        {buyers.map((b) => (
+          <li key={b.id}>
+            <span>
+              <span className="buyer-name">{b.nickname ?? `Card ${b.code}`}</span>
+              {b.nickname && <span className="muted small"> card {b.code}</span>}
+              <span className="xsmall muted" style={{ display: "block" }}>
+                {plural(b.visits, "visit", "visits")}, {plural(b.itemsBought, "item", "items")}. Last visit{" "}
+                {whenOf(b.lastAt, shop.timezone)}
+              </span>
+            </span>
+            <span className="buyer-numbers">
+              <strong className="tnum">{peso(b.spentCents)}</strong>
+              <span className="xsmall muted tnum" style={{ display: "block" }}>
+                {b.stamps}/{shop.stampsRequired} stamps
+              </span>
+            </span>
+          </li>
+        ))}
+      </ol>
+      <Link to="/admin/customers" className="btn btn--ghost btn--sm" style={{ marginTop: 12 }}>
+        <Icon name="people" /> See all customers
+      </Link>
     </>
   );
 }

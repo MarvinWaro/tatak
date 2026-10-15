@@ -4,10 +4,12 @@ import type {
   CardHistoryEntry,
   CardSummary,
   CardView,
+  Promo,
   PublicMenuItem,
   PublicShop,
   ShopSettings,
 } from "../shared/types";
+import { CARD_COLORS, type CardColor, INK_COLORS, type InkColor } from "../shared/theme";
 import type { ShopRow } from "./auth";
 import type { D1Database } from "./env";
 
@@ -35,6 +37,16 @@ export interface CardRow {
   created_at: number;
 }
 
+export interface PromoRow {
+  step: number;
+  percent_off: number;
+  label: string;
+}
+
+export const PROMOS_SQL = "SELECT step, percent_off, label FROM card_promos WHERE shop_id = ? ORDER BY step";
+
+export const toPromo = (r: PromoRow): Promo => ({ step: r.step, percentOff: r.percent_off, label: r.label });
+
 export const toPublicMenuItem = (r: MenuRow): PublicMenuItem => ({
   id: r.id,
   name: r.name,
@@ -48,7 +60,12 @@ export const toAdminMenuItem = (r: MenuRow): AdminMenuItem => ({
   sortOrder: r.sort_order,
 });
 
-export const toPublicShop = (s: ShopRow, menu: MenuRow[]): PublicShop => ({
+const cardColorOf = (s: ShopRow): CardColor => (s.card_color in CARD_COLORS ? (s.card_color as CardColor) : "canary");
+const inkColorOf = (s: ShopRow): InkColor => (s.ink_color in INK_COLORS ? (s.ink_color as InkColor) : "violet");
+export const logoUrlOf = (s: ShopRow): string | null =>
+  s.logo_version > 0 ? `/api/shops/${s.slug}/logo?v=${s.logo_version}` : null;
+
+export const toPublicShop = (s: ShopRow, menu: MenuRow[], promos: PromoRow[]): PublicShop => ({
   slug: s.slug,
   name: s.name,
   timezone: s.timezone,
@@ -58,7 +75,11 @@ export const toPublicShop = (s: ShopRow, menu: MenuRow[]): PublicShop => ({
   openTime: s.open_time,
   closeTime: s.close_time,
   requirePin: s.require_pin === 1 && s.pin_hash !== null,
+  cardColor: cardColorOf(s),
+  inkColor: inkColorOf(s),
+  logoUrl: logoUrlOf(s),
   menu: menu.map(toPublicMenuItem),
+  promos: promos.map(toPromo),
 });
 
 export const toShopSettings = (s: ShopRow): ShopSettings => ({
@@ -76,9 +97,12 @@ export const toShopSettings = (s: ShopRow): ShopSettings => ({
   closeTime: s.close_time,
   requirePin: s.require_pin === 1 && s.pin_hash !== null,
   hasPin: s.pin_hash !== null,
+  cardColor: cardColorOf(s),
+  inkColor: inkColorOf(s),
+  logoUrl: logoUrlOf(s),
 });
 
-export const toCardSummary = (c: CardRow): CardSummary => ({
+export const toCardSummary = (c: CardRow, promosUsed: number[]): CardSummary => ({
   code: c.code,
   nickname: c.nickname,
   stamps: c.stamps,
@@ -86,15 +110,22 @@ export const toCardSummary = (c: CardRow): CardSummary => ({
   rewardsRedeemed: c.rewards_redeemed,
   isBlocked: c.is_blocked === 1,
   createdAt: c.created_at,
+  promosUsed,
 });
 
 export const MENU_SQL = `SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items
   WHERE shop_id = ? AND is_archived = 0 AND is_available = 1 ORDER BY sort_order, created_at`;
 
+/** Steps of the promos this card used in its current round. Served by the orders_promo_once index. */
+export const PROMOS_USED_SQL = `SELECT promo_step FROM orders
+  WHERE card_id = ? AND promo_round = ? AND promo_step IS NOT NULL AND status = 'approved'`;
+
 /** Everything the customer's card page needs, in one database round trip. */
 export async function loadCardView(db: D1Database, shop: ShopRow, card: CardRow): Promise<CardView> {
-  const [menu, stampSources, orders, items] = await db.batch([
+  const [menu, promos, promosUsed, stampSources, orders, items] = await db.batch([
     db.prepare(MENU_SQL).bind(shop.id),
+    db.prepare(PROMOS_SQL).bind(shop.id),
+    db.prepare(PROMOS_USED_SQL).bind(card.id, card.rewards_redeemed),
     db
       .prepare(
         `SELECT created_at, stamps_awarded AS n FROM orders
@@ -106,7 +137,7 @@ export async function loadCardView(db: D1Database, shop: ShopRow, card: CardRow)
       .bind(card.id),
     db
       .prepare(
-        `SELECT id, created_at, is_reward, status, total_cents, stamps_awarded FROM orders
+        `SELECT id, created_at, is_reward, status, total_cents, discount_cents, promo_step, stamps_awarded FROM orders
          WHERE card_id = ? ORDER BY created_at DESC LIMIT 10`,
       )
       .bind(card.id),
@@ -135,6 +166,10 @@ export async function loadCardView(db: D1Database, shop: ShopRow, card: CardRow)
     itemsByOrder.set(it.order_id, list);
   }
 
+  const promoRows = promos.results as PromoRow[];
+  const labelOf = (step: number | null) =>
+    step === null ? null : (promoRows.find((p) => p.step === step)?.label ?? "Promo");
+
   const history: CardHistoryEntry[] = (
     orders.results as {
       id: string;
@@ -142,6 +177,8 @@ export async function loadCardView(db: D1Database, shop: ShopRow, card: CardRow)
       is_reward: number;
       status: "approved" | "voided";
       total_cents: number;
+      discount_cents: number;
+      promo_step: number | null;
       stamps_awarded: number;
     }[]
   ).map((o) => ({
@@ -150,13 +187,18 @@ export async function loadCardView(db: D1Database, shop: ShopRow, card: CardRow)
     isReward: o.is_reward === 1,
     status: o.status,
     totalCents: o.total_cents,
+    discountCents: o.discount_cents,
+    promoLabel: labelOf(o.promo_step),
     stampsAwarded: o.stamps_awarded,
     items: itemsByOrder.get(o.id) ?? [],
   }));
 
   return {
-    shop: toPublicShop(shop, menu.results as MenuRow[]),
-    card: toCardSummary(card),
+    shop: toPublicShop(shop, menu.results as MenuRow[], promoRows),
+    card: toCardSummary(
+      card,
+      (promosUsed.results as { promo_step: number }[]).map((r) => r.promo_step),
+    ),
     stampDates,
     history,
   };

@@ -84,11 +84,35 @@ These limits in **Settings** add more protection either way:
 
 Each order records how it was approved in `approved_via`: `pin` or `tap`.
 
+## Card design
+
+In **Settings → Card design**, each shop can upload a logo and pick a card color and a stamp color. Customers' card pages, the barista screen and the QR poster use them; the admin screens keep Tatak's own colors.
+
+- Colors come from a fixed set in `shared/theme.ts`. Every card color is light and every stamp color is dark, so any pair stays readable.
+- The browser shrinks logos to 256 pixels before upload. They're stored in the `shop_logos` table and served from `/api/shops/<slug>/logo` with a version number, so phones cache them.
+
 ## Customer cards
 
-- A card is created when the customer taps **Get my stamp card**. Their phone keeps a 16-character backup code; the server stores only its SHA-256 hash.
+- A card is created when the customer taps **Get my stamp card**. Their phone keeps an 8-character backup code (shown as `XXXX-XXXX`); the server stores only its SHA-256 hash. Older cards have 16-character codes, and those still work.
 - On a new phone, the customer chooses **I already have a card on another phone** and types the backup code.
 - The short code on the card (for example `K7Q4MZ`) is what the barista searches for in **Customers**.
+
+## Super admin
+
+`/super` shows every registered shop (email, join date, customers, last order, last 30 days of sales) and every transaction across shops, one day at a time, filterable by shop. It is read-only.
+
+Super admins are separate accounts, not shops. There's no sign-up page: you make them in the terminal. The command asks for a name, an email, a password (at least 12 characters, hidden while you type) and the password again.
+
+```bash
+npm run superadmin           # local database (the one npm run dev uses)
+npm run superadmin:remote    # live database (asks you to type yes first)
+```
+
+Then log in at `/super/login`. Running the command again with the same email offers to replace that account's name and password and logs it out everywhere. That's how you reset a forgotten password.
+
+- Five wrong passwords lock the account for 10 minutes.
+- A log-in lasts 7 days. Its cookie is only sent to `/api/super/*`.
+- To remove a super admin: `npx wrangler d1 execute tatak --remote --command "DELETE FROM super_admins WHERE email = 'name@example.com'"`
 
 ## Project layout
 
@@ -104,9 +128,11 @@ worker/
   routes/auth.ts           sign up, log in, log out, password
   routes/admin.ts          settings, menu, customers
   routes/reports.ts        sales report, orders, CSV, void
+  routes/super.ts          super admin: all shops, all transactions
 src/
   pages/CustomerPage.tsx   the customer's card, order picker, barista screen
   pages/admin/*            Sales, Orders, Menu, Customers, Settings, Poster
+  pages/super/*            super admin: Shops, Transactions
   components/StampCard.tsx the yellow card with violet ink stamps
   components/HoldButton.tsx press-and-hold approval
 ```

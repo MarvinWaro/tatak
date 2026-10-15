@@ -51,9 +51,10 @@ export function serializeCookie(
   name: string,
   value: string,
   maxAgeSeconds: number,
+  path = "/",
 ): string {
   const secure = new URL(req.url).protocol === "https:" ? "; Secure" : "";
-  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure}`;
+  return `${name}=${encodeURIComponent(value)}; Path=${path}; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure}`;
 }
 
 /** Blocks form posts from other sites (CSRF). Requests without an Origin header (curl, scripts) pass. */

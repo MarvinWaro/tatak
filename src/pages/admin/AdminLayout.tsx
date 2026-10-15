@@ -50,7 +50,10 @@ export function AdminLayout({ path, children }: { path: string; children: ReactN
   return (
     <div className="admin">
       <header className="admin-top">
-        <span className="admin-shop">{shop?.name ?? ""}</span>
+        <span className="admin-shop">
+          {shop?.logoUrl && <img className="admin-logo" src={shop.logoUrl} alt="" />}
+          {shop?.name ?? ""}
+        </span>
         {shop && (
           <a
             className="btn btn--ghost btn--sm"

@@ -17,6 +17,8 @@ const paths = {
   search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Z M20 20l-4-4",
   download: "M12 4v11 M7 10l5 5 5-5 M5 20h14",
   close: "M6 6l12 12 M18 6L6 18",
+  store: "M3 9h18l-1.5-5h-15L3 9Z M5 9v11h14V9 M10 20v-5h4v5",
+  gift: "M4 11h16v9H4z M3 7h18v4H3z M12 7v13 M12 7C11 4.5 9.5 3.5 8.3 3.8 6.6 4.2 7 6.6 12 7Z M12 7c1-2.5 2.5-3.5 3.7-3.2 1.7.4 1.3 2.8-3.7 3.2Z",
 } as const;
 
 export type IconName = keyof typeof paths;
@@ -40,12 +42,7 @@ export function Icon({ name, className = "icon", label }: { name: IconName; clas
   );
 }
 
-export function BrandMark() {
-  return (
-    <svg viewBox="0 0 64 64" aria-hidden="true">
-      <rect width="64" height="64" rx="14" fill="#F6DE5C" />
-      <circle cx="32" cy="32" r="21" fill="#4B2F8E" />
-      <path d="M24 26h16v3h-6.5v14h-3V29H24z" fill="#F6DE5C" />
-    </svg>
-  );
+/** The Tatak wordmark: stamp mascot plus "Loyalty for local shops". */
+export function BrandLogo() {
+  return <img src="/assets/img/logo.png" alt="Tatak" width={640} height={223} />;
 }

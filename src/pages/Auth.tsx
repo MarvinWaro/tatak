@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import type { ShopSettings } from "../../shared/types";
-import { BrandMark } from "../components/Icon";
+import { BrandLogo } from "../components/Icon";
 import { api, errorMessage } from "../lib/api";
 import { Link, navigate } from "../lib/router";
 
@@ -16,15 +16,14 @@ function toSlug(name: string): string {
     .replace(/-+$/g, "");
 }
 
-function AuthShell({ title, children }: { title: string; children: ReactNode }) {
+export function AuthShell({ title, children }: { title: string; children: ReactNode }) {
   useEffect(() => {
     document.title = `${title} | Tatak`;
   }, [title]);
   return (
     <main className="auth">
       <Link to="/" className="brand">
-        <BrandMark />
-        Tatak
+        <BrandLogo />
       </Link>
       <h1>{title}</h1>
       {children}
