@@ -149,8 +149,9 @@ export async function loadCardView(db: D1Database, shop: ShopRow, card: CardRow)
       .bind(card.id),
   ]);
 
-  // The stamps on the card are the newest ones (older ones were used for rewards).
-  const visible = Math.min(card.stamps, shop.stamps_required);
+  // The stamps on the card are the newest ones (older ones were used for rewards). The last box
+  // is the free one, so at most stamps_required - 1 paid stamps show.
+  const visible = Math.min(card.stamps, shop.stamps_required - 1);
   const stampDates: number[] = [];
   for (const row of stampSources.results as { created_at: number; n: number }[]) {
     for (let i = 0; i < row.n && stampDates.length < visible; i++) stampDates.push(row.created_at);

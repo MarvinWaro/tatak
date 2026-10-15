@@ -45,9 +45,9 @@ export const orderSchema = z.object({
     .max(15, "Keep an order to 15 different items or fewer."),
   /** Use the card's ready promo on this order. itemId is the item that gets the discount. */
   promo: z.object({ itemId: z.string().min(1).max(40).optional() }).optional(),
+  /** This order reaches the free box: itemId is the item that is free. */
+  reward: z.object({ itemId: z.string().min(1).max(40) }).optional(),
 });
-
-export const redeemSchema = z.object({ itemId: z.string().min(1).max(40), pin: baristaPin });
 
 const EASY_PINS = new Set(["0123", "1234", "2345", "3456", "4567", "5678", "6789", "9876", "8765", "7654", "6543", "5432", "4321", "3210"]);
 
@@ -140,6 +140,7 @@ export const reorderSchema = z.object({ ids: z.array(z.string().min(1).max(40)).
 export const adminOrderSchema = z.object({
   items: orderSchema.shape.items,
   promo: orderSchema.shape.promo,
+  reward: orderSchema.shape.reward,
   /** When it was bought, in UTC milliseconds. Defaults to now. */
   at: z.number().int().positive().optional(),
 });

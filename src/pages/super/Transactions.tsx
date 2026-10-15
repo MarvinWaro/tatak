@@ -79,7 +79,7 @@ function OrderList({ shopId, date, isToday }: { shopId: string; date: string; is
     );
   }
 
-  const paid = orders.filter((o) => o.status === "approved" && !o.isReward);
+  const paid = orders.filter((o) => o.status === "approved" && o.totalCents > 0);
   const total = paid.reduce((s, o) => s + o.totalCents, 0);
 
   return (
@@ -118,7 +118,7 @@ function OrderRow({ order, showShop }: { order: SuperOrder; showShop: boolean })
           {voided && <span className="tag tag--danger">Voided</span>}
         </div>
       </div>
-      <span className="list-amount">{order.isReward ? "Free" : peso(order.totalCents)}</span>
+      <span className="list-amount">{order.totalCents > 0 ? peso(order.totalCents) : "Free"}</span>
     </li>
   );
 }

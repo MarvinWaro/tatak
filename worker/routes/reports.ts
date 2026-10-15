@@ -36,10 +36,10 @@ export function readRange(url: URL, timezone: string): Range {
 
 const TOTALS_SQL = `SELECT
     COALESCE(SUM(total_cents), 0) AS sales,
-    COALESCE(SUM(CASE WHEN is_reward = 0 THEN 1 ELSE 0 END), 0) AS paid_orders,
+    COALESCE(SUM(CASE WHEN total_cents > 0 THEN 1 ELSE 0 END), 0) AS paid_orders,
     COALESCE(SUM(item_count), 0) AS items,
     COALESCE(SUM(stamps_awarded), 0) AS stamps,
-    COALESCE(SUM(CASE WHEN is_reward = 1 THEN item_count ELSE 0 END), 0) AS free_cups,
+    COALESCE(SUM(is_reward), 0) AS free_cups,
     COUNT(DISTINCT card_id) AS customers,
     COALESCE(SUM(discount_cents), 0) AS discounts,
     COUNT(promo_step) AS promos
@@ -107,21 +107,21 @@ export function reportRoutes(router: Router): void {
       env.DB.prepare(TOTALS_SQL).bind(shop.id, localMidnight(prevFrom, shop.timezone), r.start),
       env.DB.prepare(
         `SELECT oi.name AS name, SUM(oi.qty) AS qty, SUM(oi.qty * oi.price_cents) AS sales,
-                SUM(CASE WHEN o.is_reward = 1 THEN oi.qty ELSE 0 END) AS free_qty
+                SUM(CASE WHEN oi.is_free = 1 THEN oi.qty ELSE 0 END) AS free_qty
          FROM orders o JOIN order_items oi ON oi.order_id = o.id
          WHERE o.shop_id = ? AND o.status = 'approved' AND o.created_at >= ? AND o.created_at < ?
          GROUP BY oi.name ORDER BY qty DESC, sales DESC`,
       ).bind(shop.id, r.start, r.end),
       env.DB.prepare(
         `SELECT CAST(((created_at / 1000 + ?) % 86400) / 3600 AS INTEGER) AS hour,
-                SUM(CASE WHEN is_reward = 0 THEN 1 ELSE 0 END) AS paid_orders,
+                SUM(CASE WHEN total_cents > 0 THEN 1 ELSE 0 END) AS paid_orders,
                 SUM(total_cents) AS sales, SUM(item_count) AS items
          FROM orders WHERE shop_id = ? AND status = 'approved' AND created_at >= ? AND created_at < ?
          GROUP BY hour ORDER BY hour`,
       ).bind(offsetSec, shop.id, r.start, r.end),
       env.DB.prepare(
         `SELECT CAST((created_at / 1000 + ?) / 86400 AS INTEGER) AS day,
-                SUM(CASE WHEN is_reward = 0 THEN 1 ELSE 0 END) AS paid_orders,
+                SUM(CASE WHEN total_cents > 0 THEN 1 ELSE 0 END) AS paid_orders,
                 SUM(total_cents) AS sales, SUM(item_count) AS items
          FROM orders WHERE shop_id = ? AND status = 'approved' AND created_at >= ? AND created_at < ?
          GROUP BY day ORDER BY day`,
@@ -236,7 +236,7 @@ export function reportRoutes(router: Router): void {
     const shop = await requireShop(env, req);
     const r = readRange(url, shop.timezone);
     const rows = await env.DB.prepare(
-      `SELECT o.id, o.created_at, o.status, o.is_reward, o.promo_step, o.stamps_awarded, c.code, c.nickname,
+      `SELECT o.id, o.created_at, o.status, oi.is_free, o.promo_step, o.stamps_awarded, c.code, c.nickname,
               oi.name, oi.qty, oi.price_cents
        FROM orders o JOIN cards c ON c.id = o.card_id JOIN order_items oi ON oi.order_id = o.id
        WHERE o.shop_id = ? AND o.created_at >= ? AND o.created_at < ?
@@ -247,7 +247,7 @@ export function reportRoutes(router: Router): void {
         id: string;
         created_at: number;
         status: string;
-        is_reward: number;
+        is_free: number;
         promo_step: number | null;
         stamps_awarded: number;
         code: string;
@@ -282,7 +282,7 @@ export function reportRoutes(router: Router): void {
           row.qty,
           (row.price_cents / 100).toFixed(2),
           ((row.price_cents * row.qty) / 100).toFixed(2),
-          row.is_reward ? "yes" : "no",
+          row.is_free ? "yes" : "no",
           row.promo_step === null ? "" : `stamp ${row.promo_step}`,
           row.status,
         ]
@@ -311,20 +311,18 @@ export function reportRoutes(router: Router): void {
     if (order.status === "voided") throw new HttpError(409, "This order is already voided.");
 
     const now = Date.now();
+    // Undoes both halves of an order: the stamps it added, and the stamps its free item used
+    // (which gives the free item back). Only runs if this request is the one that voided it.
     await env.DB.batch([
       env.DB.prepare("UPDATE orders SET status = 'voided', voided_at = ? WHERE id = ? AND status = 'approved'").bind(
         now,
         order.id,
       ),
-      order.is_reward
-        ? env.DB.prepare(
-            `UPDATE cards SET stamps = stamps + ?1, rewards_redeemed = MAX(0, rewards_redeemed - 1)
-             WHERE id = ?2 AND EXISTS (SELECT 1 FROM orders WHERE id = ?3 AND voided_at = ?4)`,
-          ).bind(order.stamps_used, order.card_id, order.id, now)
-        : env.DB.prepare(
-            `UPDATE cards SET stamps = MAX(0, stamps - ?1), lifetime_stamps = MAX(0, lifetime_stamps - ?1)
-             WHERE id = ?2 AND EXISTS (SELECT 1 FROM orders WHERE id = ?3 AND voided_at = ?4)`,
-          ).bind(order.stamps_awarded, order.card_id, order.id, now),
+      env.DB.prepare(
+        `UPDATE cards SET stamps = MAX(0, stamps - ?1 + ?2), lifetime_stamps = MAX(0, lifetime_stamps - ?1),
+           rewards_redeemed = MAX(0, rewards_redeemed - ?3)
+         WHERE id = ?4 AND EXISTS (SELECT 1 FROM orders WHERE id = ?5 AND voided_at = ?6)`,
+      ).bind(order.stamps_awarded, order.stamps_used, order.is_reward, order.card_id, order.id, now),
     ]);
     return json({ ok: true });
   });

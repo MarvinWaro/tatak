@@ -1,11 +1,17 @@
 // Barista admin: shop settings, menu, customers.
-import { readyPromo } from "../../shared/promos";
-import type { AdminCustomer, Promo } from "../../shared/types";
+import type { AdminCustomer, CustomerPromos, Promo } from "../../shared/types";
 import { type ShopRow, hashPassword, requireShop } from "../auth";
 import type { Env } from "../env";
 import { HttpError, json, readJson } from "../http";
 import { normalizeCode, ulid } from "../ids";
-import { PROMO_USED_MESSAGE, isUniqueError, priceOrder, promoStatements, requireReadyPromo } from "../promos";
+import {
+  assertReachesFreeBox,
+  countStampItems,
+  priceOrder,
+  promoStatements,
+  requireReadyPromo,
+  saveOrder,
+} from "../orders";
 import type { Router } from "../router";
 import {
   adjustSchema,
@@ -262,17 +268,17 @@ export function adminRoutes(router: Router): void {
 
   // ---- Customers ----
 
-  // The promo a customer can use on their next purchase, for "Record a purchase".
-  router.get("/api/admin/customers/:id/promo", async ({ env, req, params }) => {
+  // The shop's promos and which ones this customer used this round, for "Record a purchase".
+  // The page works out which promo the purchase reaches; the server checks it again when saving.
+  router.get("/api/admin/customers/:id/promos", async ({ env, req, params }) => {
     const shop = await requireShop(env, req);
     const card = await requireShopCard(env, shop.id, params.id);
     const [promos, used] = await env.DB.batch(promoStatements(env.DB, shop.id, card));
-    const promo = readyPromo(
-      (promos.results as PromoRow[]).map(toPromo),
-      card.stamps,
-      (used.results as { promo_step: number }[]).map((r) => r.promo_step),
-    );
-    return json({ promo });
+    return json({
+      stamps: card.stamps,
+      promos: (promos.results as PromoRow[]).map(toPromo),
+      used: (used.results as { promo_step: number }[]).map((r) => r.promo_step),
+    } satisfies CustomerPromos);
   });
 
   router.get("/api/admin/customers", async ({ env, req, url }) => {
@@ -326,47 +332,32 @@ export function adminRoutes(router: Router): void {
     const menu = menuRes.results as MenuRow[];
     if (menu.length !== ids.length) throw new HttpError(409, "Something in this purchase was removed from the menu.");
 
-    const promo = body.promo ? requireReadyPromo(promosRes, usedRes, card) : null;
-    const { lines, totalCents, discountCents, itemCount, stampItems } = priceOrder(menu, qtyById, promo, body.promo?.itemId);
+    const stampItems = countStampItems(menu, qtyById);
     const stamps = shop.stamp_mode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
+    const stampsAfter = card.stamps + stamps;
+    const promo = body.promo ? requireReadyPromo(promosRes, usedRes, stampsAfter) : null;
+    if (body.reward) assertReachesFreeBox(stampsAfter, shop.stamps_required);
+    const priced = priceOrder(menu, qtyById, {
+      promo,
+      promoItemId: body.promo?.itemId,
+      freeItemId: body.reward?.itemId,
+      stampsBefore: card.stamps,
+    });
 
-    const orderId = ulid(at);
-    try {
-      await env.DB.batch([
-        env.DB.prepare(
-          `INSERT INTO orders (id, shop_id, card_id, status, is_reward, approved_via, total_cents, item_count,
-             stamps_awarded, discount_cents, promo_step, promo_round, created_at)
-           VALUES (?, ?, ?, 'approved', 0, 'admin', ?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(
-          orderId,
-          shop.id,
-          card.id,
-          totalCents,
-          itemCount,
-          stamps,
-          discountCents,
-          promo?.step ?? null,
-          promo ? card.rewards_redeemed : null,
-          at,
-        ),
-        ...lines.map((line) =>
-          env.DB.prepare(
-            `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          ).bind(ulid(at), orderId, line.item.id, line.item.name, line.priceCents, line.qty, line.item.earns_stamp),
-        ),
-        env.DB.prepare(
-          `UPDATE cards SET stamps = stamps + ?1, lifetime_stamps = lifetime_stamps + ?1,
-             last_visit_at = MAX(COALESCE(last_visit_at, 0), ?2) WHERE id = ?3`,
-        ).bind(stamps, at, card.id),
-      ]);
-    } catch (err) {
-      if (promo && isUniqueError(err)) throw new HttpError(409, PROMO_USED_MESSAGE, "promo_used");
-      throw err;
-    }
+    await saveOrder(env.DB, {
+      orderId: ulid(at),
+      shopId: shop.id,
+      card,
+      approvedVia: "admin",
+      priced,
+      stampsAdded: stamps,
+      promo,
+      stampsUsed: body.reward ? shop.stamps_required : 0,
+      at,
+    });
 
     const updated = await env.DB.prepare("SELECT * FROM cards WHERE id = ?").bind(card.id).first<CardRow>();
-    return json({ customer: toCustomer(updated!), stampsAdded: stamps, totalCents }, 201);
+    return json({ customer: toCustomer(updated!), stampsAdded: stamps, totalCents: priced.totalCents }, 201);
   });
 
   router.post("/api/admin/customers/:id/adjust", async ({ env, req, params }) => {

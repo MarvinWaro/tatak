@@ -2,6 +2,7 @@ import QRCode from "qrcode";
 import { useEffect, useState } from "react";
 import type { ShopSettings } from "../../../shared/types";
 import { Icon } from "../../components/Icon";
+import { ordinal } from "../../lib/format";
 import { Link } from "../../lib/router";
 import { useShopTheme } from "../../lib/theme";
 import { useApi } from "../../lib/useApi";
@@ -47,7 +48,8 @@ export function Poster() {
           {svg ? <div dangerouslySetInnerHTML={{ __html: svg }} /> : <div className="skeleton" style={{ aspectRatio: "1" }} />}
         </div>
         <p className="poster-rules">
-          Order on your phone and get a stamp for every {unit}. {shop.stampsRequired} stamps = {shop.rewardText}.
+          Order on your phone and get a stamp for every {unit}. Buy {shop.stampsRequired - 1}, and the{" "}
+          {ordinal(shop.stampsRequired)} is free: {shop.rewardText}.
         </p>
         <p className="poster-url">{link}</p>
       </div>
