@@ -7,12 +7,14 @@ import { adminRoutes } from "./routes/admin";
 import { authRoutes } from "./routes/auth";
 import { cardRoutes } from "./routes/card";
 import { reportRoutes } from "./routes/reports";
+import { superRoutes } from "./routes/super";
 
 const router = new Router();
 cardRoutes(router);
 authRoutes(router);
 adminRoutes(router);
 reportRoutes(router);
+superRoutes(router);
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {

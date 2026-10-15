@@ -1,5 +1,6 @@
 import { type CSSProperties, useState } from "react";
-import type { ShopSettings, StampMode } from "../../../shared/types";
+import { PROMO_PRESETS } from "../../../shared/promos";
+import type { Promo, ShopSettings, StampMode } from "../../../shared/types";
 import {
   CARD_COLOR_KEYS,
   CARD_COLORS,
@@ -15,12 +16,14 @@ import { useToast } from "../../components/Toast";
 import { api, errorMessage } from "../../lib/api";
 import { resizeLogo } from "../../lib/image";
 import { Link, navigate } from "../../lib/router";
+import { useApi } from "../../lib/useApi";
 import { useShop } from "./AdminLayout";
 
 export function Settings() {
   const { shop } = useShop();
   const link = `${location.origin}/s/${shop.slug}`;
   const toast = useToast();
+  const { data: promos, setData: setPromos, error: promosError } = useApi<Promo[]>("/api/admin/promos");
 
   const copyLink = async () => {
     try {
@@ -53,7 +56,14 @@ export function Settings() {
         </div>
       </section>
 
-      <BrandingSettings />
+      <BrandingSettings promos={promos ?? []} />
+      {promos ? (
+        <PromoSettings saved={promos} onSaved={setPromos} />
+      ) : promosError ? (
+        <p className="form-error">{promosError}</p>
+      ) : (
+        <div className="skeleton" style={{ height: 160 }} aria-busy="true" />
+      )}
       <PinSettings />
       <ShopForm />
       <PasswordForm />
@@ -74,7 +84,7 @@ export function Settings() {
 const DAY = 86400000;
 
 /** Logo and colors of the customer's stamp card, with a live preview. */
-function BrandingSettings() {
+function BrandingSettings({ promos }: { promos: Promo[] }) {
   const { shop, setShop } = useShop();
   const toast = useToast();
   const [card, setCard] = useState<CardColor>(shop.cardColor);
@@ -142,6 +152,7 @@ function BrandingSettings() {
           rewardText={shop.rewardText}
           timezone={shop.timezone}
           logoUrl={shop.logoUrl}
+          promos={promos}
         />
         <span className="brand-preview-button">Order</span>
       </div>
@@ -218,6 +229,180 @@ function BrandingSettings() {
             }}
           >
             Undo
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const MAX_PROMOS = 3;
+
+type PromoKind = (typeof PROMO_PRESETS)[number]["label"] | "custom";
+interface PromoDraft {
+  step: number;
+  kind: PromoKind;
+  label: string;
+  percent: string;
+}
+
+const toDraft = (p: Promo): PromoDraft => {
+  const preset = PROMO_PRESETS.find((x) => x.label === p.label && x.percentOff === p.percentOff);
+  return { step: p.step, kind: preset ? preset.label : "custom", label: p.label, percent: String(p.percentOff) };
+};
+
+const fromDraft = (d: PromoDraft): Promo => {
+  const preset = PROMO_PRESETS.find((x) => x.label === d.kind);
+  return preset
+    ? { step: d.step, label: preset.label, percentOff: preset.percentOff }
+    : { step: d.step, label: d.label.trim(), percentOff: Number(d.percent) };
+};
+
+/** Bonuses on chosen stamps before the free reward, e.g. stamp 5 = 50% off. */
+function PromoSettings({ saved, onSaved }: { saved: Promo[]; onSaved: (p: Promo[]) => void }) {
+  const { shop } = useShop();
+  const toast = useToast();
+  const [rows, setRows] = useState<PromoDraft[]>(() => saved.map(toDraft));
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [sampleDates] = useState(() => [Date.now()]);
+  const lastStep = shop.stampsRequired - 1;
+  const draft = rows.map(fromDraft);
+  const changed = JSON.stringify(draft) !== JSON.stringify(saved);
+
+  const setRow = (i: number, patch: Partial<PromoDraft>) =>
+    setRows(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+
+  const add = () => {
+    const taken = new Set(rows.map((r) => r.step));
+    const middle = Math.ceil(shop.stampsRequired / 2);
+    const step = [middle, ...Array.from({ length: lastStep }, (_, n) => n + 1)].find((n) => n <= lastStep && !taken.has(n));
+    if (step) setRows([...rows, { step, kind: "50% off", label: "", percent: "50" }]);
+  };
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api<Promo[]>("/api/admin/promos", { method: "POST", body: { promos: draft } });
+      onSaved(next);
+      setRows(next.map(toDraft));
+      toast("Promos saved");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="panel stack">
+      <h2 className="panel-title" style={{ margin: 0 }}>
+        Promos on the card
+      </h2>
+      <p className="small muted">
+        Give a bonus on the way to the free reward, like 50% off on stamp 5. The customer picks one item to use it on.
+        Each promo works once per card and doesn't use up stamps. Unused promos end when the free reward is claimed.
+      </p>
+
+      <div className="brand-preview" style={themeVars(shop.cardColor, shop.inkColor) as CSSProperties}>
+        <StampCard
+          shopName={shop.name}
+          required={shop.stampsRequired}
+          stamps={0}
+          stampDates={sampleDates}
+          timezone={shop.timezone}
+          logoUrl={shop.logoUrl}
+          promos={draft.filter((p) => p.label)}
+        />
+      </div>
+
+      {rows.length === 0 && <p className="small">No promos yet. Customers get only the free reward.</p>}
+      {rows.map((row, i) => (
+        <div key={i} className="subpanel stack" style={{ "--gap": "12px" } as CSSProperties}>
+          <div className="form-grid form-grid--2">
+            <div className="field">
+              <label htmlFor={`promo-step-${i}`}>On stamp</label>
+              <select
+                id={`promo-step-${i}`}
+                className="input"
+                value={row.step}
+                onChange={(e) => setRow(i, { step: Number(e.target.value) })}
+              >
+                {Array.from({ length: lastStep }, (_, n) => n + 1).map((n) => (
+                  <option key={n} value={n} disabled={n !== row.step && rows.some((r) => r.step === n)}>
+                    Stamp {n}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor={`promo-kind-${i}`}>Promo</label>
+              <select
+                id={`promo-kind-${i}`}
+                className="input"
+                value={row.kind}
+                onChange={(e) => setRow(i, { kind: e.target.value as PromoKind })}
+              >
+                {PROMO_PRESETS.map((p) => (
+                  <option key={p.label} value={p.label}>
+                    {p.percentOff === 100 ? "Free item" : p.label}
+                  </option>
+                ))}
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+          </div>
+          {row.kind === "custom" && (
+            <div className="form-grid form-grid--2">
+              <div className="field">
+                <label htmlFor={`promo-label-${i}`}>Name on the card</label>
+                <input
+                  id={`promo-label-${i}`}
+                  className="input"
+                  value={row.label}
+                  maxLength={12}
+                  placeholder="e.g. 20% off"
+                  onChange={(e) => setRow(i, { label: e.target.value })}
+                />
+                <span className="field-hint">Up to 12 characters.</span>
+              </div>
+              <div className="field">
+                <label htmlFor={`promo-percent-${i}`}>Discount on one item (%)</label>
+                <input
+                  id={`promo-percent-${i}`}
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={100}
+                  value={row.percent}
+                  onChange={(e) => setRow(i, { percent: e.target.value })}
+                />
+                <span className="field-hint">0 means you give it by hand, like a free upsize.</span>
+              </div>
+            </div>
+          )}
+          <div>
+            <button className="link-btn link-btn--danger" onClick={() => setRows(rows.filter((_, j) => j !== i))}>
+              Remove promo
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="row wrap">
+        <button className="btn" onClick={save} disabled={!changed || busy}>
+          {busy ? "Saving…" : "Save promos"}
+        </button>
+        {rows.length < MAX_PROMOS && rows.length < lastStep && (
+          <button className="btn btn--ghost" onClick={add}>
+            <Icon name="plus" /> Add promo
           </button>
         )}
       </div>

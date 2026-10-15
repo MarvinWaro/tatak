@@ -1,5 +1,6 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import type { AdminCustomer, AdminMenuItem, StampMode } from "../../../shared/types";
+import { promoDiscount } from "../../../shared/promos";
+import type { AdminCustomer, AdminMenuItem, Promo, StampMode } from "../../../shared/types";
 import { Icon } from "../../components/Icon";
 import { useToast } from "../../components/Toast";
 import { api, errorMessage } from "../../lib/api";
@@ -215,10 +216,20 @@ function RecordPurchase({
   const [at, setAt] = useState(() => localInputValue(Date.now() - 3600000));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The promo this customer can use now, if any. The server checks it again when saving.
+  const { data: promoData } = useApi<{ promo: Promo | null }>(`/api/admin/customers/${customer.id}/promo`);
+  const promo = promoData?.promo ?? null;
+  const [usePromo, setUsePromo] = useState(false);
+  const [promoItemId, setPromoItemId] = useState<string | null>(null);
 
   const lines = menu.filter((m) => (qty[m.id] ?? 0) > 0);
   const count = lines.reduce((s, m) => s + qty[m.id], 0);
-  const total = lines.reduce((s, m) => s + qty[m.id] * m.priceCents, 0);
+  const promoItem =
+    promo && usePromo && promo.percentOff > 0 && lines.length > 0
+      ? (lines.find((m) => m.id === promoItemId) ?? lines.reduce((a, b) => (b.priceCents > a.priceCents ? b : a)))
+      : null;
+  const discount = promo && promoItem ? promoDiscount(promoItem.priceCents, promo.percentOff) : 0;
+  const total = lines.reduce((s, m) => s + qty[m.id] * m.priceCents, 0) - discount;
   const stampItems = lines.reduce((s, m) => s + (m.earnsStamp ? qty[m.id] : 0), 0);
   const stamps = stampMode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
   const change = (id: string, d: number) =>
@@ -232,7 +243,14 @@ function RecordPurchase({
       if (time !== undefined && Number.isNaN(time)) throw new Error("Pick the date and time of the purchase.");
       const res = await api<{ customer: AdminCustomer; stampsAdded: number; totalCents: number }>(
         `/api/admin/customers/${customer.id}/orders`,
-        { method: "POST", body: { items: lines.map((m) => ({ id: m.id, qty: qty[m.id] })), at: time } },
+        {
+          method: "POST",
+          body: {
+            items: lines.map((m) => ({ id: m.id, qty: qty[m.id] })),
+            at: time,
+            promo: promo && usePromo ? { itemId: promoItem?.id } : undefined,
+          },
+        },
       );
       onSaved(res.customer, res.stampsAdded, res.totalCents);
     } catch (err) {
@@ -276,6 +294,39 @@ function RecordPurchase({
           );
         })}
       </ul>
+
+      {promo && (
+        <div className="stack" style={{ "--gap": "8px" } as CSSProperties}>
+          <label className="check" style={{ padding: "4px 0" }}>
+            <input type="checkbox" checked={usePromo} onChange={(e) => setUsePromo(e.target.checked)} />
+            <span>
+              Use their {promo.label}
+              <span className="field-hint" style={{ display: "block" }}>
+                {promo.percentOff > 0
+                  ? "On one item. It doesn't use up stamps."
+                  : "You give it by hand. The price doesn't change."}
+              </span>
+            </span>
+          </label>
+          {usePromo && promo.percentOff > 0 && lines.length > 1 && (
+            <div className="field" style={{ maxWidth: 320 }}>
+              <label htmlFor={`promo-item-${customer.id}`}>Which item gets the {promo.label}?</label>
+              <select
+                id={`promo-item-${customer.id}`}
+                className="input"
+                value={promoItem?.id ?? ""}
+                onChange={(e) => setPromoItemId(e.target.value)}
+              >
+                {lines.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}: −{peso(promoDiscount(m.priceCents, promo.percentOff))}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      )}
 
       <fieldset className="when-group">
         <legend className="field-label">When was it bought?</legend>

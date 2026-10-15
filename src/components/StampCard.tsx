@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
-import { Icon } from "./Icon";
+import type { Promo } from "../../shared/types";
+import { Icon, type IconName } from "./Icon";
 
 interface StampCardProps {
   shopName: string;
@@ -8,7 +9,12 @@ interface StampCardProps {
   stamps: number;
   /** Dates of the stamps on the card, newest first. */
   stampDates: number[];
-  rewardText: string;
+  /** "1 free coffee". Leave out to hide the "10 stamps = …" line. */
+  rewardText?: string;
+  /** Icon in the last, reward slot. */
+  rewardIcon?: IconName;
+  /** Promos on chosen stamps; their label shows in the empty slot. */
+  promos?: Promo[];
   timezone: string;
   /** How many of the newest stamps to animate in. */
   fresh?: number;
@@ -43,6 +49,8 @@ export function StampCard({
   stamps,
   stampDates,
   rewardText,
+  rewardIcon = "cup",
+  promos = [],
   timezone,
   fresh = 0,
   className = "",
@@ -69,12 +77,17 @@ export function StampCard({
           const isFilled = i < filled;
           const isLast = i === required - 1;
           if (!isFilled) {
+            const promo = promos.find((p) => p.step === i + 1);
             return (
               <div className="slot" key={i}>
-                {isLast ? (
+                {promo && !isLast ? (
+                  <span className="slot-empty slot-empty--promo">
+                    <span>{promo.label}</span>
+                  </span>
+                ) : isLast ? (
                   <span className="slot-empty slot-empty--reward">
                     <span>
-                      <Icon name="cup" />
+                      <Icon name={rewardIcon} />
                       <br />
                       Free
                     </span>
@@ -112,12 +125,16 @@ export function StampCard({
           );
         })}
       </div>
-      <div className="ticket-foot">
-        <span>
-          {required} stamps = {rewardText}
-        </span>
-        {extra > 0 && <span>+{extra} extra</span>}
-      </div>
+      {(rewardText || extra > 0) && (
+        <div className="ticket-foot">
+          {rewardText && (
+            <span>
+              {required} stamps = {rewardText}
+            </span>
+          )}
+          {extra > 0 && <span>+{extra} extra</span>}
+        </div>
+      )}
     </section>
   );
 }

@@ -1,5 +1,6 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import type { CardCreated, CardView, OrderResult, PublicMenuItem, PublicShop } from "../../shared/types";
+import { promoDiscount, readyPromo } from "../../shared/promos";
+import type { CardCreated, CardView, OrderResult, Promo, PublicMenuItem, PublicShop } from "../../shared/types";
 import { HoldButton } from "../components/HoldButton";
 import { Icon } from "../components/Icon";
 import { PinPad } from "../components/PinPad";
@@ -15,7 +16,17 @@ type View =
   | { kind: "handoff" }
   | { kind: "reward-pick" }
   | { kind: "reward-handoff"; item: PublicMenuItem }
-  | { kind: "done"; result: OrderResult; rewardItem?: string };
+  | { kind: "done"; result: OrderResult; rewardItem?: string; promo?: Promo };
+
+type OrderLine = { item: PublicMenuItem; qty: number };
+
+/** The item that gets the promo: the one the customer picked, or else the priciest in the order. */
+function promoTarget(lines: OrderLine[], pickedId: string | null): PublicMenuItem | null {
+  if (lines.length === 0) return null;
+  const picked = lines.find((l) => l.item.id === pickedId);
+  if (picked) return picked.item;
+  return lines.reduce((a, b) => (b.item.priceCents > a.item.priceCents ? b : a)).item;
+}
 
 /** "1 free coffee" reads better as "free coffee" in sentences like "Use my free coffee". */
 const rewardName = (text: string) => text.replace(/^1\s+/, "");
@@ -33,6 +44,8 @@ export function CustomerPage({ slug }: { slug: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [view, setView] = useState<View>({ kind: "card" });
   const [qty, setQty] = useState<Record<string, number>>({});
+  const [usePromo, setUsePromo] = useState(true);
+  const [promoItemId, setPromoItemId] = useState<string | null>(null);
 
   // Load the card if this phone has one, otherwise just the shop.
   useEffect(() => {
@@ -115,6 +128,9 @@ export function CustomerPage({ slug }: { slug: string }) {
     setCardView(next);
     setShop(next.shop);
   };
+  const lines = menu.filter((m) => qty[m.id] > 0).map((m) => ({ item: m, qty: qty[m.id] }));
+  const promo = readyPromo(cardView.shop.promos, cardView.card.stamps, cardView.card.promosUsed);
+  const promoChoice = promo && usePromo ? { promo, item: promo.percentOff > 0 ? promoTarget(lines, promoItemId) : null } : null;
 
   switch (view.kind) {
     case "order":
@@ -123,6 +139,12 @@ export function CustomerPage({ slug }: { slug: string }) {
           shop={cardView.shop}
           qty={qty}
           setQty={setQty}
+          lines={lines}
+          promo={promo}
+          usePromo={usePromo}
+          setUsePromo={setUsePromo}
+          promoItem={promoChoice?.item ?? null}
+          setPromoItemId={setPromoItemId}
           onBack={() => setView({ kind: "card" })}
           onNext={() => setView({ kind: "handoff" })}
         />
@@ -132,14 +154,17 @@ export function CustomerPage({ slug }: { slug: string }) {
         <Handoff
           shop={cardView.shop}
           card={cardView}
-          lines={menu.filter((m) => qty[m.id] > 0).map((m) => ({ item: m, qty: qty[m.id] }))}
+          lines={lines}
+          promoChoice={promoChoice}
           token={token}
           onBack={() => setView({ kind: "order" })}
           onMenuChanged={update}
           onDone={(result) => {
             update(result);
             setQty({});
-            setView({ kind: "done", result });
+            setUsePromo(true);
+            setPromoItemId(null);
+            setView({ kind: "done", result, promo: promoChoice?.promo });
           }}
         />
       );
@@ -166,7 +191,14 @@ export function CustomerPage({ slug }: { slug: string }) {
         />
       );
     case "done":
-      return <Done result={view.result} rewardItem={view.rewardItem} onClose={() => setView({ kind: "card" })} />;
+      return (
+        <Done
+          result={view.result}
+          rewardItem={view.rewardItem}
+          promo={view.promo}
+          onClose={() => setView({ kind: "card" })}
+        />
+      );
     default:
       return (
         <CardHome
@@ -176,6 +208,7 @@ export function CustomerPage({ slug }: { slug: string }) {
           onUpdate={update}
           onOrder={() => setView({ kind: "order" })}
           onReward={() => setView({ kind: "reward-pick" })}
+          promo={promo}
         />
       );
   }
@@ -295,7 +328,7 @@ function NoCard({ shop, slug, onCard }: { shop: PublicShop; slug: string; onCard
               className="input input--code"
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              placeholder="XXXX-XXXX-XXXX-XXXX"
+              placeholder="XXXX-XXXX"
               autoComplete="off"
               autoCapitalize="characters"
               spellCheck={false}
@@ -328,6 +361,7 @@ function CardHome({
   onUpdate,
   onOrder,
   onReward,
+  promo,
 }: {
   slug: string;
   view: CardView;
@@ -335,6 +369,7 @@ function CardHome({
   onUpdate: (v: CardView) => void;
   onOrder: () => void;
   onReward: () => void;
+  promo: Promo | null;
 }) {
   const { shop, card } = view;
   const [showBackup, setShowBackup] = useState(false);
@@ -378,6 +413,7 @@ function CardHome({
   let status: string;
   if (card.isBlocked) status = "This card is paused. Please talk to the barista.";
   else if (rewardReady) status = `Your ${rewardName(shop.rewardText)} is ready.`;
+  else if (promo) status = `Your ${promo.label} is ready. Use it on your next order.`;
   else if (filled === 0) status = `Collect ${shop.stampsRequired} stamps for ${shop.rewardText}.`;
   else {
     const left = shop.stampsRequired - filled;
@@ -396,6 +432,7 @@ function CardHome({
         rewardText={shop.rewardText}
         timezone={shop.timezone}
         logoUrl={shop.logoUrl}
+        promos={shop.promos}
       />
       <p className="card-status">{status}</p>
       {shop.openTime && shop.closeTime && (
@@ -445,6 +482,7 @@ function CardHome({
               <li key={h.id}>
                 <span className={`what ${h.status === "voided" ? "voided" : ""}`}>
                   {h.isReward ? `Free: ${itemsText(h.items)}` : itemsText(h.items)}
+                  {h.promoLabel && <span className="tag history-tag">{h.promoLabel}</span>}
                 </span>
                 <span className="gain">
                   {h.status === "voided"
@@ -538,17 +576,31 @@ function OrderPicker({
   shop,
   qty,
   setQty,
+  lines,
+  promo,
+  usePromo,
+  setUsePromo,
+  promoItem,
+  setPromoItemId,
   onBack,
   onNext,
 }: {
   shop: PublicShop;
   qty: Record<string, number>;
   setQty: (q: Record<string, number>) => void;
+  lines: OrderLine[];
+  promo: Promo | null;
+  usePromo: boolean;
+  setUsePromo: (v: boolean) => void;
+  /** The item getting the discount, when a percent promo is on and items are picked. */
+  promoItem: PublicMenuItem | null;
+  setPromoItemId: (id: string) => void;
   onBack: () => void;
   onNext: () => void;
 }) {
   const count = Object.values(qty).reduce((a, b) => a + b, 0);
-  const total = shop.menu.reduce((sum, m) => sum + (qty[m.id] ?? 0) * m.priceCents, 0);
+  const discount = promo && usePromo && promoItem ? promoDiscount(promoItem.priceCents, promo.percentOff) : 0;
+  const total = shop.menu.reduce((sum, m) => sum + (qty[m.id] ?? 0) * m.priceCents, 0) - discount;
   const change = (id: string, delta: number) => {
     const next = Math.max(0, Math.min(20, (qty[id] ?? 0) + delta));
     setQty({ ...qty, [id]: next });
@@ -565,6 +617,12 @@ function OrderPicker({
       <h1 className="shop-title" style={{ marginBottom: 20 }}>
         What are you having?
       </h1>
+      {promo && (
+        <p className="form-note" style={{ marginBottom: 16 }}>
+          Your {promo.label} is ready.{" "}
+          {promo.percentOff > 0 ? "Pick your order, then choose below which item gets it." : "You can use it below."}
+        </p>
+      )}
       <ul className="menu-list panel panel--flush">
         {shop.menu.map((m) => {
           const n = qty[m.id] ?? 0;
@@ -600,6 +658,44 @@ function OrderPicker({
           );
         })}
       </ul>
+      {promo && (
+        <section className="panel panel--flush promo-panel" aria-label={`Your ${promo.label}`}>
+          <label className="pick">
+            <input type="checkbox" checked={usePromo} onChange={(e) => setUsePromo(e.target.checked)} />
+            <span>
+              <span className="menu-name">Use my {promo.label}</span>
+              <span className="menu-meta" style={{ display: "block" }}>
+                {promo.percentOff > 0 ? "On one item in this order." : "The barista gives it to you."}
+                {" "}Untick to save it for later.
+              </span>
+            </span>
+          </label>
+          {usePromo && promo.percentOff > 0 && lines.length > 1 && (
+            <fieldset className="promo-items">
+              <legend className="small">Which item gets the {promo.label}?</legend>
+              {lines.map((l) => (
+                <label key={l.item.id} className="pick">
+                  <input
+                    type="radio"
+                    name="promo-item"
+                    checked={promoItem?.id === l.item.id}
+                    onChange={() => setPromoItemId(l.item.id)}
+                  />
+                  <span className="spread">
+                    <span>{l.item.name}</span>
+                    <span className="muted tnum">−{peso(promoDiscount(l.item.priceCents, promo.percentOff))}</span>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          )}
+          {usePromo && promo.percentOff > 0 && lines.length === 1 && promoItem && (
+            <p className="small muted promo-one">
+              {promo.label} on 1 {promoItem.name}: −{peso(discount)}
+            </p>
+          )}
+        </section>
+      )}
       <div className="dock">
         <div className="dock-inner">
           <button className="btn btn--big btn--block" disabled={count === 0} onClick={onNext}>
@@ -724,6 +820,7 @@ function Handoff({
   shop,
   card,
   lines,
+  promoChoice,
   token,
   onBack,
   onDone,
@@ -731,14 +828,18 @@ function Handoff({
 }: {
   shop: PublicShop;
   card: CardView;
-  lines: { item: PublicMenuItem; qty: number }[];
+  lines: OrderLine[];
+  /** The promo to use on this order, and the item that gets it (null for a 0% promo). */
+  promoChoice: { promo: Promo; item: PublicMenuItem | null } | null;
   token: string;
   onBack: () => void;
   onDone: (r: OrderResult) => void;
   onMenuChanged: (v: CardView) => void;
 }) {
   useLockScroll();
-  const total = lines.reduce((s, l) => s + l.qty * l.item.priceCents, 0);
+  const discount =
+    promoChoice?.item ? promoDiscount(promoChoice.item.priceCents, promoChoice.promo.percentOff) : 0;
+  const total = lines.reduce((s, l) => s + l.qty * l.item.priceCents, 0) - discount;
   const stampItems = lines.reduce((s, l) => s + (l.item.earnsStamp ? l.qty : 0), 0);
   const earns = shop.stampMode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
   const who = card.card.nickname ? `${card.card.nickname}, card ${card.card.code}` : `Card ${card.card.code}`;
@@ -746,7 +847,11 @@ function Handoff({
   const send = (pin?: string) =>
     api<OrderResult>("/api/card/orders", {
       method: "POST",
-      body: { items: lines.map((l) => ({ id: l.item.id, qty: l.qty })), pin },
+      body: {
+        items: lines.map((l) => ({ id: l.item.id, qty: l.qty })),
+        promo: promoChoice ? { itemId: promoChoice.item?.id } : undefined,
+        pin,
+      },
       cardToken: token,
     });
 
@@ -764,6 +869,15 @@ function Handoff({
               <span className="price">{peso(l.qty * l.item.priceCents)}</span>
             </li>
           ))}
+          {promoChoice && (
+            <li className="handoff-promo">
+              <span>
+                {promoChoice.promo.label}
+                {promoChoice.item ? `: ${promoChoice.item.name}` : ""}
+              </span>
+              <span className="price">{promoChoice.item ? `−${peso(discount)}` : "Give by hand"}</span>
+            </li>
+          )}
         </ul>
         <div className="handoff-total">
           <span>Total</span>
@@ -781,7 +895,7 @@ function Handoff({
           onDone={onDone}
           onBack={onBack}
           onError={(err) => {
-            if (err instanceof ApiError && err.code === "menu_changed") {
+            if (err instanceof ApiError && ["menu_changed", "promo_used", "no_promo"].includes(err.code ?? "")) {
               api<CardView>("/api/card", { cardToken: token }).then(onMenuChanged, () => {});
             }
           }}
@@ -887,7 +1001,17 @@ function RewardHandoff({
 
 /* ---------------- Done ---------------- */
 
-function Done({ result, rewardItem, onClose }: { result: OrderResult; rewardItem?: string; onClose: () => void }) {
+function Done({
+  result,
+  rewardItem,
+  promo,
+  onClose,
+}: {
+  result: OrderResult;
+  rewardItem?: string;
+  promo?: Promo;
+  onClose: () => void;
+}) {
   const { shop, card } = result;
   const heading = rewardItem
     ? `Enjoy your free ${rewardItem}`
@@ -914,7 +1038,15 @@ function Done({ result, rewardItem, onClose }: { result: OrderResult; rewardItem
         timezone={shop.timezone}
         fresh={fresh}
         logoUrl={shop.logoUrl}
+        promos={shop.promos}
       />
+      {promo && (
+        <p className="form-note" style={{ marginTop: 16 }}>
+          {result.discountCents > 0
+            ? `You saved ${peso(result.discountCents)} with your ${promo.label}.`
+            : `Your ${promo.label} was used. Enjoy!`}
+        </p>
+      )}
       {result.limitNote && (
         <p className="form-note" style={{ marginTop: 16 }}>
           {result.limitNote}

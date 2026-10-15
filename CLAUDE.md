@@ -47,7 +47,11 @@ npm run typecheck           # app + worker
 npm run build
 npm run db:migrate:local    # apply migrations to the local D1
 npm run db:migrate:remote   # apply migrations to the live D1 (do this BEFORE merging to main)
+npm run db:fresh            # like migrate:fresh: drop every table in the local D1, run all migrations again
+npm run db:fresh:remote     # same on the LIVE D1 (asks you to type "tatak"; prints a Time Travel restore command)
 npx wrangler d1 execute tatak --remote --command "SELECT ..."
+npm run superadmin          # create a super admin (or reset its password) in the local D1
+npm run superadmin:remote   # same, in the live D1
 ```
 
 ## Branches and deploy
@@ -60,26 +64,32 @@ npx wrangler d1 execute tatak --remote --command "SELECT ..."
 ## Layout
 
 ```
-migrations/            0001_init, 0002_barista_pin, 0003_shop_branding
+migrations/            0001_init, 0002_barista_pin, 0003_shop_branding, 0004_orders_time_index, 0005_super_admins, 0006_promos
+scripts/create-super-admin.mjs  terminal prompts behind npm run superadmin
+scripts/db-fresh.mjs   drop all tables + rerun migrations (npm run db:fresh / db:fresh:remote)
 shared/types.ts        API shapes shared by worker and app
 shared/theme.ts        card/ink color presets + themeVars()
+shared/promos.ts       readyPromo(), promoDiscount(), presets (same math on server and phone)
 worker/index.ts        entry, CSRF origin check, error handling
 worker/router.ts       path router
-worker/auth.ts         PBKDF2 passwords/PINs, sessions, requireShop()
+worker/auth.ts         PBKDF2 passwords/PINs, sessions, requireShop(), super sessions, requireSuperAdmin()
 worker/views.ts        row → API mapping, loadCardView()
 worker/validate.ts     all Zod schemas
+worker/promos.ts           priceOrder() and the ready-promo check, shared by customer and barista orders
 worker/routes/card.ts      customer: shop, card, order, redeem, logo, checkBaristaPin()
 worker/routes/auth.ts      register, login, logout, password
 worker/routes/admin.ts     settings, PIN, logo, menu, customers, record purchase
 worker/routes/reports.ts   sales report, orders, CSV, void
+worker/routes/super.ts     super admin: log in/out, all shops, all transactions (read-only)
 src/pages/CustomerPage.tsx customer card, order picker, barista handoff + PIN pad
 src/pages/admin/*          Sales, Orders, Menu, Customers, Settings, Poster
-src/components/            StampCard, HoldButton, PinPad, Toast, Icon
+src/pages/super/*          Super admin: log in, Shops, Transactions (at /super)
+src/components/            StampCard, HoldButton, PinPad, Toast, Icon, DayPicker
 ```
 
 ## Data model
 
-`shops`, `sessions`, `menu_items`, `cards`, `orders`, `order_items`, `stamp_adjustments`, `shop_logos`.
+`shops`, `sessions`, `menu_items`, `cards`, `orders`, `order_items`, `stamp_adjustments`, `shop_logos`, `super_admins`, `super_sessions`, `card_promos`.
 
 - IDs are **ULIDs**. Times are **UTC milliseconds**. Money is **centavos** (integer).
 - Reports and opening hours use the shop's time zone (`Asia/Manila`).
@@ -94,11 +104,13 @@ src/components/            StampCard, HoldButton, PinPad, Toast, Icon
 
 ## Rules that must not break
 
-- **Customer cards:** the browser keeps a 16-character backup code (Crockford base32); the server stores only its SHA-256 (`cards.secret_hash`).
+- **Customer cards:** the browser keeps an 8-character backup code (Crockford base32, shown as `XXXX-XXXX`); the server stores only its SHA-256 (`cards.secret_hash`). Cards made before Oct 2026 have 16-character codes, and those still work.
+- **Super admin:** separate accounts in `super_admins` (not shops), made only with `npm run superadmin`; there's no sign-up route. Log in at `/super/login`; the `tatak_super` cookie is HttpOnly, Path=/api/super, 7 days. Every `/api/super/*` data route calls `requireSuperAdmin()`. A shop session never opens super routes, and a super session never opens shop routes. Super admin passwords are at least 12 characters, in the same PBKDF2 format as shops.
 - **Barista PIN:** PBKDF2 hash in `shops.pin_hash`. 5 wrong tries per card → 15-minute lock; 10 wrong per shop in 10 minutes → PIN stamping paused. The PIN is never stored on the customer's phone.
 - **Passwords:** PBKDF2-SHA256, 20,000 iterations (CPU limit). The count is stored in each hash, so it can be raised later.
 - **Customer-side limits** (cooldown, daily stamp cap, opening hours) apply to customer-initiated orders only, not barista-recorded purchases.
 - **Free reward redemption** is guarded in one batch so a double tap can't spend stamps twice. Keep that pattern for anything that spends stamps.
+- **Promos** (`card_promos`, up to 3 per shop, e.g. stamp 5 = 50% off): a promo doesn't use stamps. It's ready when `cards.stamps >= step` and is used once per round; the round is `cards.rewards_redeemed`, so claiming the free reward resets promos. The order stores `promo_step`, `promo_round` and `discount_cents`; the unique partial index `orders_promo_once` blocks a second use, and voiding the order frees it. The discount is on one unit of the item the customer picks, saved as its own `order_items` line so per-item sales add up.
 - **Free plan limits** (reset 8 AM Manila): 100k Worker requests/day, D1 100k rows written/day, 5M rows read/day, 500 MB per database. Prefer SQL aggregation over JS loops; it saves Worker CPU.
 - **D1 limit errors** return "Stamps work again after 8:00 AM" (503), not a crash.
 
@@ -118,7 +130,7 @@ Adding Vitest with tests for `worker/` would be a good next step; ask Marvin fir
 
 ## Ideas on the roadmap (ask before starting)
 
-- **Super admin** for Marvin only (email in a Cloudflare secret): all shops, pause or delete a shop, all transactions across shops, and an activity log table for voids, stamp changes, PIN changes and deletions.
+- **Super admin, part 2:** the read-only shop list and transactions are built. Still open: pause or delete a shop, and an activity log table for voids, stamp changes, PIN changes and deletions.
 - **Quick sale** without a customer card, so walk-in sales count in reports.
 - Invite code for sign-up, while only 5–10 test shops are wanted.
 - Install as an app (PWA), and a Filipino/Taglish language option.

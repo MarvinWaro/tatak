@@ -10,6 +10,16 @@ export interface PublicMenuItem {
   earnsStamp: boolean;
 }
 
+/** A promo on one stamp of the card, e.g. stamp 5 = 50% off one item. */
+export interface Promo {
+  /** The stamp number that unlocks it. */
+  step: number;
+  /** 0 to 100. 0 means the barista gives the perk by hand and the price doesn't change. */
+  percentOff: number;
+  /** Shown in the card slot, e.g. "50% off" or "Free upsize". */
+  label: string;
+}
+
 export interface PublicShop {
   slug: string;
   name: string;
@@ -26,6 +36,8 @@ export interface PublicShop {
   /** Versioned URL of the shop's logo, or null when there is none. */
   logoUrl: string | null;
   menu: PublicMenuItem[];
+  /** Sorted by step. */
+  promos: Promo[];
 }
 
 export interface CardSummary {
@@ -36,6 +48,8 @@ export interface CardSummary {
   rewardsRedeemed: number;
   isBlocked: boolean;
   createdAt: number;
+  /** Steps of the promos already used in this round of the card. */
+  promosUsed: number[];
 }
 
 export interface CardHistoryEntry {
@@ -44,6 +58,9 @@ export interface CardHistoryEntry {
   isReward: boolean;
   status: "approved" | "voided";
   totalCents: number;
+  discountCents: number;
+  /** Label of the promo used on this order, or null. */
+  promoLabel: string | null;
   stampsAwarded: number;
   items: { name: string; qty: number }[];
 }
@@ -68,6 +85,8 @@ export interface OrderResult extends CardView {
   /** Set when fewer stamps were added than earned because of the daily limit. */
   limitNote: string | null;
   approvedAt: number;
+  /** How much the promo took off this order, in centavos. */
+  discountCents: number;
 }
 
 export interface ShopSettings {
@@ -102,6 +121,21 @@ export interface ReportTotals {
   stampsGiven: number;
   freeCups: number;
   customers: number;
+  discountsCents: number;
+  promosUsed: number;
+}
+
+/** A customer who bought in the report's date range. */
+export interface ReportBuyer {
+  id: string;
+  code: string;
+  nickname: string | null;
+  visits: number;
+  itemsBought: number;
+  spentCents: number;
+  lastAt: number;
+  /** Stamps on the card now. */
+  stamps: number;
 }
 
 export interface SalesReport {
@@ -111,6 +145,8 @@ export interface SalesReport {
   items: { name: string; qty: number; salesCents: number; freeQty: number }[];
   hours: { hour: number; paidOrders: number; salesCents: number; itemsSold: number }[];
   days: { date: string; paidOrders: number; salesCents: number; itemsSold: number }[];
+  /** Top buyers by amount spent. */
+  buyers: ReportBuyer[];
 }
 
 export interface AdminOrder {
@@ -119,6 +155,9 @@ export interface AdminOrder {
   status: "approved" | "voided";
   isReward: boolean;
   totalCents: number;
+  discountCents: number;
+  /** The stamp number of the promo used on this order, or null. */
+  promoStep: number | null;
   itemCount: number;
   stampsAwarded: number;
   stampsUsed: number;
@@ -138,6 +177,40 @@ export interface AdminCustomer {
   isBlocked: boolean;
   lastVisitAt: number | null;
   createdAt: number;
+}
+
+// ---- Super admin ----
+
+/** Every shop is in the Philippines, so the super admin shows dates and times in Manila time. */
+export const PLATFORM_TIMEZONE = "Asia/Manila";
+
+/** How many days the shop list's sales and order counts cover (today included). */
+export const SUPER_RECENT_DAYS = 30;
+
+export interface SuperShop {
+  id: string;
+  slug: string;
+  name: string;
+  email: string;
+  createdAt: number;
+  /** Customer cards ever made at this shop. */
+  customers: number;
+  /** Items on the menu now (not removed). 0 means the shop hasn't finished setting up. */
+  menuItems: number;
+  lastOrderAt: number | null;
+  /** Paid orders (not free drinks, not voided) in the last SUPER_RECENT_DAYS days. */
+  recentPaidOrders: number;
+  recentSalesCents: number;
+}
+
+export interface SuperOrder extends AdminOrder {
+  shop: { id: string; name: string; slug: string };
+}
+
+export interface SuperOrderPage {
+  orders: SuperOrder[];
+  /** Pass as ?before= to load the next (older) page; null when there are no more. */
+  nextBefore: number | null;
 }
 
 export interface ApiErrorBody {

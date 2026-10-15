@@ -12,6 +12,10 @@ import { Orders } from "./pages/admin/Orders";
 import { Poster } from "./pages/admin/Poster";
 import { Sales } from "./pages/admin/Sales";
 import { Settings } from "./pages/admin/Settings";
+import { Shops } from "./pages/super/Shops";
+import { SuperLayout } from "./pages/super/SuperLayout";
+import { SuperLogin } from "./pages/super/SuperLogin";
+import { Transactions } from "./pages/super/Transactions";
 
 const ADMIN_PAGES: Record<string, () => JSX.Element> = {
   "/admin": Sales,
@@ -21,6 +25,11 @@ const ADMIN_PAGES: Record<string, () => JSX.Element> = {
   "/admin/settings": Settings,
 };
 
+const SUPER_PAGES: Record<string, () => JSX.Element> = {
+  "/super": Shops,
+  "/super/transactions": Transactions,
+};
+
 function Routes() {
   const path = usePath().replace(/\/+$/, "") || "/";
 
@@ -28,6 +37,7 @@ function Routes() {
   if (path === "/login") return <Login />;
   if (path === "/register") return <Register />;
   if (path === "/admin/poster") return <Poster />;
+  if (path === "/super/login") return <SuperLogin />;
 
   const AdminPage = ADMIN_PAGES[path];
   if (AdminPage) {
@@ -35,6 +45,15 @@ function Routes() {
       <AdminLayout path={path}>
         <AdminPage />
       </AdminLayout>
+    );
+  }
+
+  const SuperPage = SUPER_PAGES[path];
+  if (SuperPage) {
+    return (
+      <SuperLayout path={path}>
+        <SuperPage />
+      </SuperLayout>
     );
   }
 

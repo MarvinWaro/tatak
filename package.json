@@ -12,7 +12,11 @@
     "deploy": "vite build && wrangler deploy",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply tatak --local",
-    "db:migrate:remote": "wrangler d1 migrations apply tatak --remote"
+    "db:migrate:remote": "wrangler d1 migrations apply tatak --remote",
+    "db:fresh": "node scripts/db-fresh.mjs",
+    "db:fresh:remote": "node scripts/db-fresh.mjs --remote",
+    "superadmin": "node scripts/create-super-admin.mjs",
+    "superadmin:remote": "node scripts/create-super-admin.mjs --remote"
   },
   "dependencies": {
     "qrcode": "^1.5.4",
