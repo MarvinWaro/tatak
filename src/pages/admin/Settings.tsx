@@ -301,8 +301,9 @@ function PromoSettings({ saved, onSaved }: { saved: Promo[]; onSaved: (p: Promo[
         Promos on the card
       </h2>
       <p className="small muted">
-        Give a bonus on the way to the free reward, like 50% off on stamp 5. The customer picks one item to use it on.
-        Each promo works once per card and doesn't use up stamps. Unused promos end when the free reward is claimed.
+        Give a bonus on the way to the free reward, like 50% off on stamp 5. The order that reaches that stamp gets it
+        on one cup, or the customer can save it for a later visit. Each promo works once per card and doesn't use up
+        stamps. Unused promos end when the free reward is claimed.
       </p>
 
       <div className="brand-preview" style={themeVars(shop.cardColor, shop.inkColor) as CSSProperties}>
@@ -557,7 +558,7 @@ function ShopForm() {
       </div>
       <div className="form-grid form-grid--2">
         <div className="field">
-          <label htmlFor="s-required">Stamps for a reward</label>
+          <label htmlFor="s-required">Boxes on the card</label>
           <input
             id="s-required"
             className="input"
@@ -567,6 +568,9 @@ function ShopForm() {
             value={form.stampsRequired}
             onChange={(e) => set("stampsRequired", e.target.value)}
           />
+          <span className="field-hint">
+            The last box is the free one. With 10, customers buy 9 and the 10th is free.
+          </span>
         </div>
         <div className="field">
           <label htmlFor="s-reward">Reward</label>
@@ -577,7 +581,7 @@ function ShopForm() {
             maxLength={40}
             onChange={(e) => set("rewardText", e.target.value)}
           />
-          <span className="field-hint">Shown as "10 stamps = 1 free coffee".</span>
+          <span className="field-hint">Shown as "10th stamp = 1 free coffee".</span>
         </div>
       </div>
 

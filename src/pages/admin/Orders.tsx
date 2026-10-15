@@ -34,7 +34,7 @@ export function Orders() {
     setNextBefore(page.nextBefore);
   };
 
-  const paid = orders.filter((o) => o.status === "approved" && !o.isReward);
+  const paid = orders.filter((o) => o.status === "approved" && o.totalCents > 0);
   const total = paid.reduce((s, o) => s + o.totalCents, 0);
 
   return (
@@ -118,7 +118,7 @@ function OrderRow({ order, timezone, onChanged }: { order: AdminOrder; timezone:
           {voided && <span className="tag tag--danger">Voided</span>}
         </div>
       </div>
-      <span className="list-amount">{order.isReward ? "Free" : peso(order.totalCents)}</span>
+      <span className="list-amount">{order.totalCents > 0 ? peso(order.totalCents) : "Free"}</span>
       {!voided && (
         <div className="list-actions">
           {!confirming ? (
@@ -129,7 +129,9 @@ function OrderRow({ order, timezone, onChanged }: { order: AdminOrder; timezone:
             <div className="confirm">
               <p className="small">
                 {order.isReward
-                  ? `Void this free drink? ${order.stampsUsed} stamps go back to ${who}.`
+                  ? `Void this order? ${who} gets the free drink back${
+                      order.totalCents > 0 ? ` and ${peso(order.totalCents)} is removed from sales` : ""
+                    }.`
                   : `Void this ${peso(order.totalCents)} order? It's removed from sales${
                       order.stampsAwarded > 0
                         ? ` and ${plural(order.stampsAwarded, "stamp", "stamps")} ${order.stampsAwarded === 1 ? "comes" : "come"} off ${who}`

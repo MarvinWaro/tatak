@@ -1,6 +1,6 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import { promoDiscount } from "../../../shared/promos";
-import type { AdminCustomer, AdminMenuItem, Promo, StampMode } from "../../../shared/types";
+import { promoDiscount, promoNeedsStampItem, readyPromo } from "../../../shared/promos";
+import type { AdminCustomer, AdminMenuItem, CustomerPromos, StampMode } from "../../../shared/types";
 import { Icon } from "../../components/Icon";
 import { useToast } from "../../components/Toast";
 import { api, errorMessage } from "../../lib/api";
@@ -163,6 +163,7 @@ function CustomerRow({
               customer={customer}
               menu={menu}
               stampMode={stampMode}
+              required={required}
               onCancel={() => setPanel("none")}
               onSaved={(next, stampsAdded, totalCents) => {
                 onChange(next);
@@ -197,17 +198,26 @@ function localInputValue(ms: number): string {
   return d.toISOString().slice(0, 16);
 }
 
+/** The item picked in a select, or else the priciest one. */
+function pickItem(items: AdminMenuItem[], pickedId: string | null): AdminMenuItem | null {
+  if (items.length === 0) return null;
+  return items.find((m) => m.id === pickedId) ?? items.reduce((a, b) => (b.priceCents > a.priceCents ? b : a));
+}
+
 /** A real purchase: counts in Sales and adds stamps. */
 function RecordPurchase({
   customer,
   menu,
   stampMode,
+  required,
   onCancel,
   onSaved,
 }: {
   customer: AdminCustomer;
   menu: AdminMenuItem[];
   stampMode: StampMode;
+  /** Boxes on the card; the last one is free. */
+  required: number;
   onCancel: () => void;
   onSaved: (c: AdminCustomer, stampsAdded: number, totalCents: number) => void;
 }) {
@@ -216,22 +226,34 @@ function RecordPurchase({
   const [at, setAt] = useState(() => localInputValue(Date.now() - 3600000));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The promo this customer can use now, if any. The server checks it again when saving.
-  const { data: promoData } = useApi<{ promo: Promo | null }>(`/api/admin/customers/${customer.id}/promo`);
-  const promo = promoData?.promo ?? null;
+  // The shop's promos and this customer's used ones. The server checks the promo again when saving.
+  const { data: promoState } = useApi<CustomerPromos>(`/api/admin/customers/${customer.id}/promos`);
   const [usePromo, setUsePromo] = useState(false);
   const [promoItemId, setPromoItemId] = useState<string | null>(null);
+  const [useFree, setUseFree] = useState(false);
+  const [freeItemId, setFreeItemId] = useState<string | null>(null);
 
   const lines = menu.filter((m) => (qty[m.id] ?? 0) > 0);
   const count = lines.reduce((s, m) => s + qty[m.id], 0);
-  const promoItem =
-    promo && usePromo && promo.percentOff > 0 && lines.length > 0
-      ? (lines.find((m) => m.id === promoItemId) ?? lines.reduce((a, b) => (b.priceCents > a.priceCents ? b : a)))
-      : null;
-  const discount = promo && promoItem ? promoDiscount(promoItem.priceCents, promo.percentOff) : 0;
-  const total = lines.reduce((s, m) => s + qty[m.id] * m.priceCents, 0) - discount;
   const stampItems = lines.reduce((s, m) => s + (m.earnsStamp ? qty[m.id] : 0), 0);
   const stamps = stampMode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
+  // Counts this purchase's stamps, like the customer's phone: at 4 stamps, 2 cups reach a stamp-5
+  // promo, and at 9 stamps on a 10-box card the next cup lands on the free box.
+  const stampsBefore = promoState?.stamps ?? customer.stamps;
+  const stampsAfter = stampsBefore + stamps;
+  const stampLines = lines.filter((m) => m.earnsStamp);
+  const freeOffered = promoState !== null && stampsAfter >= required && stampLines.length > 0;
+  const freeItem = freeOffered && useFree ? pickItem(stampLines, freeItemId) : null;
+  const reached = promoState ? readyPromo(promoState.promos, stampsAfter, promoState.used) : null;
+  const promoLines = reached
+    ? (promoNeedsStampItem(reached, stampsBefore) ? stampLines : lines).filter(
+        (m) => !(freeItem && m.id === freeItem.id && qty[m.id] < 2),
+      )
+    : [];
+  const promo = reached && (reached.percentOff === 0 || promoLines.length > 0) ? reached : null;
+  const promoItem = promo && usePromo && promo.percentOff > 0 ? pickItem(promoLines, promoItemId) : null;
+  const discount = promo && promoItem ? promoDiscount(promoItem.priceCents, promo.percentOff) : 0;
+  const total = lines.reduce((s, m) => s + qty[m.id] * m.priceCents, 0) - discount - (freeItem?.priceCents ?? 0);
   const change = (id: string, d: number) =>
     setQty({ ...qty, [id]: Math.max(0, Math.min(20, (qty[id] ?? 0) + d)) });
 
@@ -249,6 +271,7 @@ function RecordPurchase({
             items: lines.map((m) => ({ id: m.id, qty: qty[m.id] })),
             at: time,
             promo: promo && usePromo ? { itemId: promoItem?.id } : undefined,
+            reward: freeItem ? { itemId: freeItem.id } : undefined,
           },
         },
       );
@@ -295,6 +318,38 @@ function RecordPurchase({
         })}
       </ul>
 
+      {freeOffered && (
+        <div className="stack" style={{ "--gap": "8px" } as CSSProperties}>
+          <label className="check" style={{ padding: "4px 0" }}>
+            <input type="checkbox" checked={useFree} onChange={(e) => setUseFree(e.target.checked)} />
+            <span>
+              Give their free drink
+              <span className="field-hint" style={{ display: "block" }}>
+                This purchase reaches box {required}, the free one. One item that earns a stamp is free, and the card
+                starts over.
+              </span>
+            </span>
+          </label>
+          {useFree && stampLines.length > 1 && (
+            <div className="field" style={{ maxWidth: 320 }}>
+              <label htmlFor={`free-item-${customer.id}`}>Which one is free?</label>
+              <select
+                id={`free-item-${customer.id}`}
+                className="input"
+                value={freeItem?.id ?? ""}
+                onChange={(e) => setFreeItemId(e.target.value)}
+              >
+                {stampLines.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}: −{peso(m.priceCents)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      )}
+
       {promo && (
         <div className="stack" style={{ "--gap": "8px" } as CSSProperties}>
           <label className="check" style={{ padding: "4px 0" }}>
@@ -302,13 +357,14 @@ function RecordPurchase({
             <span>
               Use their {promo.label}
               <span className="field-hint" style={{ display: "block" }}>
+                {stampsBefore < promo.step && `This purchase reaches stamp ${promo.step}. `}
                 {promo.percentOff > 0
                   ? "On one item. It doesn't use up stamps."
                   : "You give it by hand. The price doesn't change."}
               </span>
             </span>
           </label>
-          {usePromo && promo.percentOff > 0 && lines.length > 1 && (
+          {usePromo && promo.percentOff > 0 && promoLines.length > 1 && (
             <div className="field" style={{ maxWidth: 320 }}>
               <label htmlFor={`promo-item-${customer.id}`}>Which item gets the {promo.label}?</label>
               <select
@@ -317,7 +373,7 @@ function RecordPurchase({
                 value={promoItem?.id ?? ""}
                 onChange={(e) => setPromoItemId(e.target.value)}
               >
-                {lines.map((m) => (
+                {promoLines.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.name}: −{peso(promoDiscount(m.priceCents, promo.percentOff))}
                   </option>

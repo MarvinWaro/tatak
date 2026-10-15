@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import type { Promo } from "../../shared/types";
+import { ordinal } from "../lib/format";
 import { Icon, type IconName } from "./Icon";
 
 interface StampCardProps {
@@ -9,7 +10,7 @@ interface StampCardProps {
   stamps: number;
   /** Dates of the stamps on the card, newest first. */
   stampDates: number[];
-  /** "1 free coffee". Leave out to hide the "10 stamps = …" line. */
+  /** "1 free coffee". Leave out to hide the "10th stamp = …" line. */
   rewardText?: string;
   /** Icon in the last, reward slot. */
   rewardIcon?: IconName;
@@ -56,8 +57,11 @@ export function StampCard({
   className = "",
   logoUrl,
 }: StampCardProps) {
-  const filled = Math.min(stamps, required);
-  const extra = Math.max(0, stamps - required);
+  // The last box is the free one: paid stamps fill the boxes before it, and the cup that
+  // lands on it is free. Stamps past that (a free item saved for later) show as extra.
+  const filled = Math.min(stamps, required - 1);
+  const extra = Math.max(0, stamps - (required - 1));
+  const freeReady = stamps >= required - 1;
   const cols = required <= 5 ? required : required <= 12 ? Math.ceil(required / 2) : 6;
 
   return (
@@ -85,7 +89,7 @@ export function StampCard({
                     <span>{promo.label}</span>
                   </span>
                 ) : isLast ? (
-                  <span className="slot-empty slot-empty--reward">
+                  <span className={`slot-empty slot-empty--reward ${freeReady ? "slot-empty--ready" : ""}`}>
                     <span>
                       <Icon name={rewardIcon} />
                       <br />
@@ -129,7 +133,7 @@ export function StampCard({
         <div className="ticket-foot">
           {rewardText && (
             <span>
-              {required} stamps = {rewardText}
+              {ordinal(required)} stamp = {rewardText}
             </span>
           )}
           {extra > 0 && <span>+{extra} extra</span>}

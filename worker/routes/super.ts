@@ -89,7 +89,7 @@ export function superRoutes(router: Router): void {
               (SELECT COUNT(*) FROM cards WHERE cards.shop_id = s.id) AS customers,
               (SELECT COUNT(*) FROM menu_items WHERE menu_items.shop_id = s.id AND menu_items.is_archived = 0) AS menu_items,
               (SELECT MAX(created_at) FROM orders WHERE orders.shop_id = s.id) AS last_order_at,
-              COALESCE(SUM(CASE WHEN o.is_reward = 0 THEN 1 ELSE 0 END), 0) AS recent_paid_orders,
+              COALESCE(SUM(CASE WHEN o.total_cents > 0 THEN 1 ELSE 0 END), 0) AS recent_paid_orders,
               COALESCE(SUM(o.total_cents), 0) AS recent_sales
        FROM shops s
        LEFT JOIN orders o ON o.shop_id = s.id AND o.status = 'approved' AND o.created_at >= ?

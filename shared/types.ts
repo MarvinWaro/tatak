@@ -167,6 +167,14 @@ export interface AdminOrder {
   items: { name: string; qty: number; priceCents: number }[];
 }
 
+/** A customer's promo state, for "Record a purchase". */
+export interface CustomerPromos {
+  stamps: number;
+  promos: Promo[];
+  /** Steps already used in this round of the card. */
+  used: number[];
+}
+
 export interface AdminCustomer {
   id: string;
   code: string;
@@ -198,7 +206,7 @@ export interface SuperShop {
   /** Items on the menu now (not removed). 0 means the shop hasn't finished setting up. */
   menuItems: number;
   lastOrderAt: number | null;
-  /** Paid orders (not free drinks, not voided) in the last SUPER_RECENT_DAYS days. */
+  /** Paid orders (something was charged, not voided) in the last SUPER_RECENT_DAYS days. */
   recentPaidOrders: number;
   recentSalesCents: number;
 }

@@ -1,12 +1,12 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import { promoDiscount, readyPromo } from "../../shared/promos";
+import { promoDiscount, promoNeedsStampItem, readyPromo } from "../../shared/promos";
 import type { CardCreated, CardView, OrderResult, Promo, PublicMenuItem, PublicShop } from "../../shared/types";
 import { HoldButton } from "../components/HoldButton";
 import { Icon } from "../components/Icon";
 import { PinPad } from "../components/PinPad";
 import { StampCard } from "../components/StampCard";
 import { ApiError, api, errorMessage } from "../lib/api";
-import { itemsText, peso, plural, timeOf, whenOf } from "../lib/format";
+import { itemsText, ordinal, peso, plural, timeOf, whenOf } from "../lib/format";
 import { backupSeenKey, cardKey, readItem, removeItem, writeItem } from "../lib/storage";
 import { useShopTheme } from "../lib/theme";
 
@@ -14,18 +14,48 @@ type View =
   | { kind: "card" }
   | { kind: "order" }
   | { kind: "handoff" }
-  | { kind: "reward-pick" }
-  | { kind: "reward-handoff"; item: PublicMenuItem }
-  | { kind: "done"; result: OrderResult; rewardItem?: string; promo?: Promo };
+  | { kind: "done"; result: OrderResult; freeItem?: string; promo?: Promo };
 
 type OrderLine = { item: PublicMenuItem; qty: number };
 
-/** The item that gets the promo: the one the customer picked, or else the priciest in the order. */
-function promoTarget(lines: OrderLine[], pickedId: string | null): PublicMenuItem | null {
+/** What this order uses: a promo and the item it goes on, and the free item when it reaches the free box. */
+interface OrderChoice {
+  promo: Promo | null;
+  /** Null for a 0% promo, which the barista gives by hand. */
+  promoItem: PublicMenuItem | null;
+  freeItem: PublicMenuItem | null;
+}
+
+/** A perk the order screen offers: a promo, or the free box. */
+interface Perk {
+  key: string;
+  /** "50% off" or "free coffee". */
+  name: string;
+  /** Why it's offered and how it works, shown under its checkbox. */
+  note: string;
+  question: string;
+  use: boolean;
+  setUse: (v: boolean) => void;
+  /** Items it can go on. Empty for a 0% promo, which needs no item. */
+  lines: OrderLine[];
+  item: PublicMenuItem | null;
+  setItemId: (id: string) => void;
+  /** Centavos it takes off one unit of an item. */
+  off: (item: PublicMenuItem) => number;
+}
+
+/** The item the customer picked, or else the priciest in the list. */
+function pickItem(lines: OrderLine[], pickedId: string | null): PublicMenuItem | null {
   if (lines.length === 0) return null;
   const picked = lines.find((l) => l.item.id === pickedId);
   if (picked) return picked.item;
   return lines.reduce((a, b) => (b.item.priceCents > a.item.priceCents ? b : a)).item;
+}
+
+/** Centavos the promo and the free item take off the order. */
+function choiceOff(choice: OrderChoice): number {
+  const promoOff = choice.promo && choice.promoItem ? promoDiscount(choice.promoItem.priceCents, choice.promo.percentOff) : 0;
+  return promoOff + (choice.freeItem?.priceCents ?? 0);
 }
 
 /** "1 free coffee" reads better as "free coffee" in sentences like "Use my free coffee". */
@@ -46,6 +76,8 @@ export function CustomerPage({ slug }: { slug: string }) {
   const [qty, setQty] = useState<Record<string, number>>({});
   const [usePromo, setUsePromo] = useState(true);
   const [promoItemId, setPromoItemId] = useState<string | null>(null);
+  const [useFree, setUseFree] = useState(true);
+  const [freeItemId, setFreeItemId] = useState<string | null>(null);
 
   // Load the card if this phone has one, otherwise just the shop.
   useEffect(() => {
@@ -129,8 +161,74 @@ export function CustomerPage({ slug }: { slug: string }) {
     setShop(next.shop);
   };
   const lines = menu.filter((m) => qty[m.id] > 0).map((m) => ({ item: m, qty: qty[m.id] }));
-  const promo = readyPromo(cardView.shop.promos, cardView.card.stamps, cardView.card.promosUsed);
-  const promoChoice = promo && usePromo ? { promo, item: promo.percentOff > 0 ? promoTarget(lines, promoItemId) : null } : null;
+  const { stamps, promosUsed } = cardView.card;
+  const { promos, stampsRequired: required, stampMode, rewardText } = cardView.shop;
+  const stampLines = lines.filter((l) => l.item.earnsStamp);
+  const stampItems = stampLines.reduce((n, l) => n + l.qty, 0);
+  const earns = stampMode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
+  // Promos and the free box count this order's stamps: at 4 stamps, 2 cups reach a stamp-5 promo;
+  // on a 10-box card at 9 stamps, the next cup lands on the free box.
+  const stampsAfter = stamps + earns;
+
+  // The cup that lands on the free box is free, so it must be an item that earns a stamp.
+  const freeOffered = stampsAfter >= required && stampLines.length > 0;
+  const freeItem = freeOffered && useFree ? pickItem(stampLines, freeItemId) : null;
+
+  // A promo reached by this order goes on a stamped cup; one saved from before can go on any item.
+  // It can't share the free unit, so an item ordered once can't be both free and discounted.
+  const promoNow = readyPromo(promos, stamps, promosUsed);
+  const reached = readyPromo(promos, stampsAfter, promosUsed);
+  const promoLines = reached
+    ? (promoNeedsStampItem(reached, stamps) ? stampLines : lines).filter(
+        (l) => !(freeItem && l.item.id === freeItem.id && l.qty < 2),
+      )
+    : [];
+  const promo = reached && (reached.percentOff === 0 || promoLines.length > 0) ? reached : null;
+  const promoItem = promo && usePromo && promo.percentOff > 0 ? pickItem(promoLines, promoItemId) : null;
+  const choice: OrderChoice = { promo: promo && usePromo ? promo : null, promoItem, freeItem };
+
+  const freeName = rewardName(rewardText);
+  const perks: Perk[] = [];
+  if (freeOffered) {
+    perks.push({
+      key: "free",
+      name: freeName,
+      note: `${stamps >= required ? "" : `This order reaches box ${required}, the free one. `}One item that earns a stamp is free. Untick to save it for later.`,
+      question: "Which one is free?",
+      use: useFree,
+      setUse: setUseFree,
+      lines: stampLines,
+      item: freeItem,
+      setItemId: setFreeItemId,
+      off: (item) => item.priceCents,
+    });
+  }
+  if (promo) {
+    perks.push({
+      key: "promo",
+      name: promo.label,
+      note: `${promoNow?.step === promo.step ? "" : `This order reaches stamp ${promo.step}. `}${
+        promo.percentOff > 0 ? "On one item in this order." : "The barista gives it to you."
+      } Untick to save it for later.`,
+      question: `Which item gets the ${promo.label}?`,
+      use: usePromo,
+      setUse: setUsePromo,
+      lines: promo.percentOff > 0 ? promoLines : [],
+      item: promoItem,
+      setItemId: setPromoItemId,
+      off: (item) => promoDiscount(item.priceCents, promo.percentOff),
+    });
+  }
+
+  // A note at the top of the order screen when a perk is ready before picking anything.
+  const readyNote =
+    stamps >= required - 1
+      ? `Your ${freeName} is ready. Add something that earns a stamp, then pick below which one is free.`
+      : promoNow
+        ? `Your ${promoNow.label} is ready. ${
+            promoNow.percentOff > 0 ? "Pick your order, then choose below which item gets it." : "You can use it below."
+          }`
+        : null;
 
   switch (view.kind) {
     case "order":
@@ -139,12 +237,9 @@ export function CustomerPage({ slug }: { slug: string }) {
           shop={cardView.shop}
           qty={qty}
           setQty={setQty}
-          lines={lines}
-          promo={promo}
-          usePromo={usePromo}
-          setUsePromo={setUsePromo}
-          promoItem={promoChoice?.item ?? null}
-          setPromoItemId={setPromoItemId}
+          readyNote={readyNote}
+          perks={perks}
+          off={choiceOff(choice)}
           onBack={() => setView({ kind: "card" })}
           onNext={() => setView({ kind: "handoff" })}
         />
@@ -155,7 +250,7 @@ export function CustomerPage({ slug }: { slug: string }) {
           shop={cardView.shop}
           card={cardView}
           lines={lines}
-          promoChoice={promoChoice}
+          choice={choice}
           token={token}
           onBack={() => setView({ kind: "order" })}
           onMenuChanged={update}
@@ -164,29 +259,9 @@ export function CustomerPage({ slug }: { slug: string }) {
             setQty({});
             setUsePromo(true);
             setPromoItemId(null);
-            setView({ kind: "done", result, promo: promoChoice?.promo });
-          }}
-        />
-      );
-    case "reward-pick":
-      return (
-        <RewardPicker
-          shop={cardView.shop}
-          onBack={() => setView({ kind: "card" })}
-          onPick={(item) => setView({ kind: "reward-handoff", item })}
-        />
-      );
-    case "reward-handoff":
-      return (
-        <RewardHandoff
-          shop={cardView.shop}
-          card={cardView}
-          item={view.item}
-          token={token}
-          onBack={() => setView({ kind: "reward-pick" })}
-          onDone={(result) => {
-            update(result);
-            setView({ kind: "done", result, rewardItem: view.item.name });
+            setUseFree(true);
+            setFreeItemId(null);
+            setView({ kind: "done", result, promo: choice.promo ?? undefined, freeItem: choice.freeItem?.name });
           }}
         />
       );
@@ -194,7 +269,7 @@ export function CustomerPage({ slug }: { slug: string }) {
       return (
         <Done
           result={view.result}
-          rewardItem={view.rewardItem}
+          freeItem={view.freeItem}
           promo={view.promo}
           onClose={() => setView({ kind: "card" })}
         />
@@ -207,8 +282,7 @@ export function CustomerPage({ slug }: { slug: string }) {
           token={token}
           onUpdate={update}
           onOrder={() => setView({ kind: "order" })}
-          onReward={() => setView({ kind: "reward-pick" })}
-          promo={promo}
+          promo={promoNow}
         />
       );
   }
@@ -360,7 +434,6 @@ function CardHome({
   token,
   onUpdate,
   onOrder,
-  onReward,
   promo,
 }: {
   slug: string;
@@ -368,7 +441,7 @@ function CardHome({
   token: string;
   onUpdate: (v: CardView) => void;
   onOrder: () => void;
-  onReward: () => void;
+  /** A promo reached on an earlier visit and not used yet. */
   promo: Promo | null;
 }) {
   const { shop, card } = view;
@@ -379,8 +452,10 @@ function CardHome({
   const [nameError, setNameError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const filled = Math.min(card.stamps, shop.stampsRequired);
-  const rewardReady = card.stamps >= shop.stampsRequired;
+  // The last box is the free one: at 9 stamps on a 10-box card, the next cup is free.
+  const required = shop.stampsRequired;
+  const freeReady = card.stamps >= required - 1;
+  const freeName = rewardName(shop.rewardText);
   const hasMenu = shop.menu.length > 0;
   const formattedCode = token.match(/.{1,4}/g)?.join("-") ?? token;
 
@@ -412,12 +487,16 @@ function CardHome({
 
   let status: string;
   if (card.isBlocked) status = "This card is paused. Please talk to the barista.";
-  else if (rewardReady) status = `Your ${rewardName(shop.rewardText)} is ready.`;
+  else if (freeReady) status = `Your ${freeName} is next! Tap Order and pick it.`;
   else if (promo) status = `Your ${promo.label} is ready. Use it on your next order.`;
-  else if (filled === 0) status = `Collect ${shop.stampsRequired} stamps for ${shop.rewardText}.`;
   else {
-    const left = shop.stampsRequired - filled;
-    status = `${filled} of ${shop.stampsRequired} stamps. ${plural(left, "more stamp", "more stamps")} for ${shop.rewardText}.`;
+    const left = required - 1 - card.stamps;
+    status =
+      card.stamps === 0
+        ? `Buy ${required - 1}, get the ${ordinal(required)} free.`
+        : `${card.stamps} of ${required} stamps. ${left} more, then the next one is free.`;
+    const nextPromo = shop.promos.find((p) => p.step === card.stamps + 1 && !card.promosUsed.includes(p.step));
+    if (nextPromo) status += ` Next stamp: ${nextPromo.label}!`;
   }
 
   return (
@@ -481,7 +560,8 @@ function CardHome({
             {view.history.map((h) => (
               <li key={h.id}>
                 <span className={`what ${h.status === "voided" ? "voided" : ""}`}>
-                  {h.isReward ? `Free: ${itemsText(h.items)}` : itemsText(h.items)}
+                  {itemsText(h.items)}
+                  {h.isReward && <span className="tag history-tag">Free</span>}
                   {h.promoLabel && <span className="tag history-tag">{h.promoLabel}</span>}
                 </span>
                 <span className="gain">
@@ -495,7 +575,9 @@ function CardHome({
                 </span>
                 <span className="when">
                   {whenOf(h.createdAt, shop.timezone)}
-                  {!h.isReward && h.status !== "voided" && h.stampsAwarded > 0 ? `, ${peso(h.totalCents)}` : ""}
+                  {h.status !== "voided" && h.totalCents > 0 && (h.isReward || h.stampsAwarded > 0)
+                    ? `, ${peso(h.totalCents)}`
+                    : ""}
                 </span>
               </li>
             ))}
@@ -551,17 +633,12 @@ function CardHome({
       {!card.isBlocked && (
         <div className="dock">
           <div className="dock-inner">
-            {rewardReady && (
-              <button className="btn btn--big btn--block btn--bond" onClick={onReward} disabled={!hasMenu}>
-                Use my {rewardName(shop.rewardText)}
-              </button>
-            )}
             <button
-              className={`btn btn--big btn--block ${rewardReady ? "btn--ghost" : ""}`}
+              className={`btn btn--big btn--block ${freeReady ? "btn--bond" : ""}`}
               onClick={onOrder}
               disabled={!hasMenu}
             >
-              Order
+              {freeReady ? `Order my ${freeName}` : "Order"}
             </button>
           </div>
         </div>
@@ -576,31 +653,26 @@ function OrderPicker({
   shop,
   qty,
   setQty,
-  lines,
-  promo,
-  usePromo,
-  setUsePromo,
-  promoItem,
-  setPromoItemId,
+  readyNote,
+  perks,
+  off,
   onBack,
   onNext,
 }: {
   shop: PublicShop;
   qty: Record<string, number>;
   setQty: (q: Record<string, number>) => void;
-  lines: OrderLine[];
-  promo: Promo | null;
-  usePromo: boolean;
-  setUsePromo: (v: boolean) => void;
-  /** The item getting the discount, when a percent promo is on and items are picked. */
-  promoItem: PublicMenuItem | null;
-  setPromoItemId: (id: string) => void;
+  /** Shown at the top when a perk is ready before picking anything. */
+  readyNote: string | null;
+  /** The free box and the promo, when this order reaches them. */
+  perks: Perk[];
+  /** Centavos the chosen perks take off. */
+  off: number;
   onBack: () => void;
   onNext: () => void;
 }) {
   const count = Object.values(qty).reduce((a, b) => a + b, 0);
-  const discount = promo && usePromo && promoItem ? promoDiscount(promoItem.priceCents, promo.percentOff) : 0;
-  const total = shop.menu.reduce((sum, m) => sum + (qty[m.id] ?? 0) * m.priceCents, 0) - discount;
+  const total = shop.menu.reduce((sum, m) => sum + (qty[m.id] ?? 0) * m.priceCents, 0) - off;
   const change = (id: string, delta: number) => {
     const next = Math.max(0, Math.min(20, (qty[id] ?? 0) + delta));
     setQty({ ...qty, [id]: next });
@@ -617,10 +689,9 @@ function OrderPicker({
       <h1 className="shop-title" style={{ marginBottom: 20 }}>
         What are you having?
       </h1>
-      {promo && (
+      {readyNote && (
         <p className="form-note" style={{ marginBottom: 16 }}>
-          Your {promo.label} is ready.{" "}
-          {promo.percentOff > 0 ? "Pick your order, then choose below which item gets it." : "You can use it below."}
+          {readyNote}
         </p>
       )}
       <ul className="menu-list panel panel--flush">
@@ -658,44 +729,9 @@ function OrderPicker({
           );
         })}
       </ul>
-      {promo && (
-        <section className="panel panel--flush promo-panel" aria-label={`Your ${promo.label}`}>
-          <label className="pick">
-            <input type="checkbox" checked={usePromo} onChange={(e) => setUsePromo(e.target.checked)} />
-            <span>
-              <span className="menu-name">Use my {promo.label}</span>
-              <span className="menu-meta" style={{ display: "block" }}>
-                {promo.percentOff > 0 ? "On one item in this order." : "The barista gives it to you."}
-                {" "}Untick to save it for later.
-              </span>
-            </span>
-          </label>
-          {usePromo && promo.percentOff > 0 && lines.length > 1 && (
-            <fieldset className="promo-items">
-              <legend className="small">Which item gets the {promo.label}?</legend>
-              {lines.map((l) => (
-                <label key={l.item.id} className="pick">
-                  <input
-                    type="radio"
-                    name="promo-item"
-                    checked={promoItem?.id === l.item.id}
-                    onChange={() => setPromoItemId(l.item.id)}
-                  />
-                  <span className="spread">
-                    <span>{l.item.name}</span>
-                    <span className="muted tnum">−{peso(promoDiscount(l.item.priceCents, promo.percentOff))}</span>
-                  </span>
-                </label>
-              ))}
-            </fieldset>
-          )}
-          {usePromo && promo.percentOff > 0 && lines.length === 1 && promoItem && (
-            <p className="small muted promo-one">
-              {promo.label} on 1 {promoItem.name}: −{peso(discount)}
-            </p>
-          )}
-        </section>
-      )}
+      {perks.map((perk) => (
+        <PerkPanel key={perk.key} perk={perk} />
+      ))}
       <div className="dock">
         <div className="dock-inner">
           <button className="btn btn--big btn--block" disabled={count === 0} onClick={onNext}>
@@ -704,6 +740,47 @@ function OrderPicker({
         </div>
       </div>
     </main>
+  );
+}
+
+/** "Use my 50% off" or "Use my free coffee", with a choice of which item gets it. */
+function PerkPanel({ perk }: { perk: Perk }) {
+  return (
+    <section className="panel panel--flush promo-panel" aria-label={`Your ${perk.name}`}>
+      <label className="pick">
+        <input type="checkbox" checked={perk.use} onChange={(e) => perk.setUse(e.target.checked)} />
+        <span>
+          <span className="menu-name">Use my {perk.name}</span>
+          <span className="menu-meta" style={{ display: "block" }}>
+            {perk.note}
+          </span>
+        </span>
+      </label>
+      {perk.use && perk.lines.length > 1 && (
+        <fieldset className="promo-items">
+          <legend className="small">{perk.question}</legend>
+          {perk.lines.map((l) => (
+            <label key={l.item.id} className="pick">
+              <input
+                type="radio"
+                name={`${perk.key}-item`}
+                checked={perk.item?.id === l.item.id}
+                onChange={() => perk.setItemId(l.item.id)}
+              />
+              <span className="spread">
+                <span>{l.item.name}</span>
+                <span className="muted tnum">−{peso(perk.off(l.item))}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {perk.use && perk.lines.length === 1 && perk.item && (
+        <p className="small muted promo-one">
+          {perk.name} on 1 {perk.item.name}: −{peso(perk.off(perk.item))}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -820,7 +897,7 @@ function Handoff({
   shop,
   card,
   lines,
-  promoChoice,
+  choice,
   token,
   onBack,
   onDone,
@@ -829,17 +906,15 @@ function Handoff({
   shop: PublicShop;
   card: CardView;
   lines: OrderLine[];
-  /** The promo to use on this order, and the item that gets it (null for a 0% promo). */
-  promoChoice: { promo: Promo; item: PublicMenuItem | null } | null;
+  choice: OrderChoice;
   token: string;
   onBack: () => void;
   onDone: (r: OrderResult) => void;
   onMenuChanged: (v: CardView) => void;
 }) {
   useLockScroll();
-  const discount =
-    promoChoice?.item ? promoDiscount(promoChoice.item.priceCents, promoChoice.promo.percentOff) : 0;
-  const total = lines.reduce((s, l) => s + l.qty * l.item.priceCents, 0) - discount;
+  const { promo, promoItem, freeItem } = choice;
+  const total = lines.reduce((s, l) => s + l.qty * l.item.priceCents, 0) - choiceOff(choice);
   const stampItems = lines.reduce((s, l) => s + (l.item.earnsStamp ? l.qty : 0), 0);
   const earns = shop.stampMode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
   const who = card.card.nickname ? `${card.card.nickname}, card ${card.card.code}` : `Card ${card.card.code}`;
@@ -849,14 +924,20 @@ function Handoff({
       method: "POST",
       body: {
         items: lines.map((l) => ({ id: l.item.id, qty: l.qty })),
-        promo: promoChoice ? { itemId: promoChoice.item?.id } : undefined,
+        promo: promo ? { itemId: promoItem?.id } : undefined,
+        reward: freeItem ? { itemId: freeItem.id } : undefined,
         pin,
       },
       cardToken: token,
     });
 
   return (
-    <div className="handoff" role="dialog" aria-modal="true" aria-label="Order for the barista">
+    <div
+      className={`handoff ${freeItem ? "handoff--reward" : ""}`}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Order for the barista"
+    >
       <div className="handoff-inner">
         <p className="handoff-hint">Show this screen to the barista</p>
         <ul className="handoff-lines">
@@ -869,13 +950,21 @@ function Handoff({
               <span className="price">{peso(l.qty * l.item.priceCents)}</span>
             </li>
           ))}
-          {promoChoice && (
+          {promo && (
             <li className="handoff-promo">
               <span>
-                {promoChoice.promo.label}
-                {promoChoice.item ? `: ${promoChoice.item.name}` : ""}
+                {promo.label}
+                {promoItem ? `: ${promoItem.name}` : ""}
               </span>
-              <span className="price">{promoChoice.item ? `−${peso(discount)}` : "Give by hand"}</span>
+              <span className="price">
+                {promoItem ? `−${peso(promoDiscount(promoItem.priceCents, promo.percentOff))}` : "Give by hand"}
+              </span>
+            </li>
+          )}
+          {freeItem && (
+            <li className="handoff-promo">
+              <span>Free: {freeItem.name}</span>
+              <span className="price">−{peso(freeItem.priceCents)}</span>
             </li>
           )}
         </ul>
@@ -884,10 +973,14 @@ function Handoff({
           <span className="tnum">{peso(total)}</span>
         </div>
         <p className="handoff-who">{who}</p>
-        {earns > 0 && <span className="handoff-earn">Earns {plural(earns, "stamp", "stamps")}</span>}
+        {freeItem ? (
+          <span className="handoff-earn">Free box used. The card starts over.</span>
+        ) : (
+          earns > 0 && <span className="handoff-earn">Earns {plural(earns, "stamp", "stamps")}</span>
+        )}
         <BaristaApproval
           requirePin={shop.requirePin}
-          variant="stamp"
+          variant={freeItem ? "reward" : "stamp"}
           holdLabel="Hold to stamp"
           busyLabel="Stamping…"
           backLabel="Change order"
@@ -895,104 +988,10 @@ function Handoff({
           onDone={onDone}
           onBack={onBack}
           onError={(err) => {
-            if (err instanceof ApiError && ["menu_changed", "promo_used", "no_promo"].includes(err.code ?? "")) {
+            if (err instanceof ApiError && ["menu_changed", "promo_used", "no_promo", "reward_used", "no_reward"].includes(err.code ?? "")) {
               api<CardView>("/api/card", { cardToken: token }).then(onMenuChanged, () => {});
             }
           }}
-        />
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- Reward ---------------- */
-
-function RewardPicker({
-  shop,
-  onBack,
-  onPick,
-}: {
-  shop: PublicShop;
-  onBack: () => void;
-  onPick: (item: PublicMenuItem) => void;
-}) {
-  const drinks = shop.menu.filter((m) => m.earnsStamp);
-  const [picked, setPicked] = useState<string | null>(null);
-  const item = drinks.find((d) => d.id === picked);
-
-  return (
-    <main className="phone">
-      <div className="row" style={{ marginBottom: 12, marginLeft: -10 }}>
-        <button className="icon-btn" onClick={onBack} aria-label="Back to my card">
-          <Icon name="back" />
-        </button>
-        <span className="muted">{shop.name}</span>
-      </div>
-      <h1 className="shop-title" style={{ marginBottom: 8 }}>
-        Pick your free drink
-      </h1>
-      <p className="muted" style={{ marginBottom: 20 }}>
-        This uses {shop.stampsRequired} stamps from your card.
-      </p>
-      <fieldset className="panel panel--flush" style={{ border: 0, margin: 0 }}>
-        <legend className="sr-only">Free drink</legend>
-        {drinks.map((d) => (
-          <label key={d.id} className="pick">
-            <input type="radio" name="reward" checked={picked === d.id} onChange={() => setPicked(d.id)} />
-            <span className="menu-name">{d.name}</span>
-          </label>
-        ))}
-      </fieldset>
-      <div className="dock">
-        <div className="dock-inner">
-          <button className="btn btn--big btn--block btn--bond" disabled={!item} onClick={() => item && onPick(item)}>
-            {item ? `Show barista: free ${item.name}` : "Pick a drink"}
-          </button>
-        </div>
-      </div>
-    </main>
-  );
-}
-
-function RewardHandoff({
-  shop,
-  card,
-  item,
-  token,
-  onBack,
-  onDone,
-}: {
-  shop: PublicShop;
-  card: CardView;
-  item: PublicMenuItem;
-  token: string;
-  onBack: () => void;
-  onDone: (r: OrderResult) => void;
-}) {
-  useLockScroll();
-  const who = card.card.nickname ? `${card.card.nickname}, card ${card.card.code}` : `Card ${card.card.code}`;
-  const send = (pin?: string) =>
-    api<OrderResult>("/api/card/redeem", { method: "POST", body: { itemId: item.id, pin }, cardToken: token });
-
-  return (
-    <div className="handoff handoff--reward" role="dialog" aria-modal="true" aria-label="Free drink for the barista">
-      <div className="handoff-inner">
-        <p className="handoff-hint">Show this screen to the barista</p>
-        <p className="handoff-total" style={{ display: "block" }}>
-          Free {item.name}
-        </p>
-        <p className="handoff-who">
-          For {who}. Uses {shop.stampsRequired} of {card.card.stamps} stamps.
-        </p>
-        <BaristaApproval
-          requirePin={shop.requirePin}
-          variant="reward"
-          holdLabel="Hold to give"
-          busyLabel="Saving…"
-          backLabel="Pick another drink"
-          send={send}
-          onDone={onDone}
-          onBack={onBack}
         />
       </div>
     </div>
@@ -1003,22 +1002,25 @@ function RewardHandoff({
 
 function Done({
   result,
-  rewardItem,
+  freeItem,
   promo,
   onClose,
 }: {
   result: OrderResult;
-  rewardItem?: string;
+  /** Name of the item that was free, when the order used the free box. */
+  freeItem?: string;
   promo?: Promo;
   onClose: () => void;
 }) {
   const { shop, card } = result;
-  const heading = rewardItem
-    ? `Enjoy your free ${rewardItem}`
+  const required = shop.stampsRequired;
+  const heading = freeItem
+    ? `Enjoy your free ${freeItem}`
     : result.stampsAdded > 0
       ? `+${plural(result.stampsAdded, "stamp", "stamps")}`
       : "Order saved";
-  const fresh = Math.min(result.stampsAdded, card.stamps, shop.stampsRequired);
+  const fresh = Math.min(result.stampsAdded, card.stamps, required - 1);
+  const left = required - 1 - card.stamps;
 
   return (
     <main className="phone">
@@ -1026,7 +1028,7 @@ function Done({
         {heading}
       </h1>
       <p className="muted" style={{ marginBottom: 20 }}>
-        {rewardItem ? "Given" : "Saved"} today at {timeOf(result.approvedAt, shop.timezone)}
+        Saved today at {timeOf(result.approvedAt, shop.timezone)}
       </p>
       <StampCard
         shopName={card.nickname ? `${card.nickname}'s card` : shop.name}
@@ -1053,11 +1055,11 @@ function Done({
         </p>
       )}
       <p className="card-status">
-        {card.stamps >= shop.stampsRequired
-          ? `Your ${rewardName(shop.rewardText)} is ready for your next visit.`
-          : rewardItem && card.stamps === 0
-            ? `Your card starts over. Collect ${shop.stampsRequired} stamps for another ${rewardName(shop.rewardText)}.`
-            : `${plural(shop.stampsRequired - card.stamps, "more stamp", "more stamps")} for ${shop.rewardText}.`}
+        {left <= 0
+          ? `Your ${rewardName(shop.rewardText)} is next!`
+          : freeItem
+            ? `Your card starts over${card.stamps > 0 ? ` with ${plural(card.stamps, "stamp", "stamps")}` : ""}. ${left} more, then the next one is free.`
+            : `${left} more, then the next one is free.`}
       </p>
       <div className="dock">
         <div className="dock-inner">

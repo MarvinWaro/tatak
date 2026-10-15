@@ -95,8 +95,14 @@ export function cardLabel(card: { code: string; nickname: string | null }): stri
   return card.nickname ? `${card.nickname} (${card.code})` : `Card ${card.code}`;
 }
 
-/** What an order did to the card: "+2 stamps", "Used 10 stamps" or "No stamps". */
-export function stampEffect(order: { isReward: boolean; stampsUsed: number; stampsAwarded: number }): string {
-  if (order.isReward) return `Used ${order.stampsUsed} stamps`;
+/** What an order did to the card: "+2 stamps", "Card started over" (free item given) or "No stamps". */
+export function stampEffect(order: { isReward: boolean; stampsAwarded: number }): string {
+  if (order.isReward) return "Card started over";
   return order.stampsAwarded > 0 ? `+${plural(order.stampsAwarded, "stamp", "stamps")}` : "No stamps";
+}
+
+/** 1st, 2nd, 3rd, 4th … 11th, 12th, 13th … 21st. */
+export function ordinal(n: number): string {
+  const teen = n % 100 >= 11 && n % 100 <= 13;
+  return `${n}${teen ? "th" : (["th", "st", "nd", "rd"][n % 10] ?? "th")}`;
 }

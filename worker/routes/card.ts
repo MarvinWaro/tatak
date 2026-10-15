@@ -1,10 +1,17 @@
-// Customer-facing routes: open a shop, create or restore a card, order, and redeem.
+// Customer-facing routes: open a shop, create or restore a card, and order (with promos and the free box).
 import type { CardCreated, OrderResult } from "../../shared/types";
 import { type ShopRow, verifyPassword } from "../auth";
 import type { D1Database, Env } from "../env";
 import { HttpError, json, readJson } from "../http";
 import { normalizeCode, randomCode, sha256Hex, ulid } from "../ids";
-import { PROMO_USED_MESSAGE, isUniqueError, priceOrder, promoStatements, requireReadyPromo } from "../promos";
+import {
+  assertReachesFreeBox,
+  countStampItems,
+  priceOrder,
+  promoStatements,
+  requireReadyPromo,
+  saveOrder,
+} from "../orders";
 import type { Router } from "../router";
 import {
   formatHHMM,
@@ -16,7 +23,6 @@ import {
 import {
   createCardSchema,
   orderSchema,
-  redeemSchema,
   restoreCardSchema,
   updateCardSchema,
 } from "../validate";
@@ -254,7 +260,7 @@ export function cardRoutes(router: Router): void {
          WHERE shop_id = ? AND is_archived = 0 AND is_available = 1 AND id IN (${ids.map(() => "?").join(",")})`,
       ).bind(shop.id, ...ids),
       env.DB.prepare(
-        `SELECT created_at FROM orders WHERE card_id = ? AND status = 'approved' AND is_reward = 0
+        `SELECT created_at FROM orders WHERE card_id = ? AND status = 'approved'
          ORDER BY created_at DESC LIMIT 1`,
       ).bind(card.id),
       env.DB.prepare(
@@ -279,8 +285,7 @@ export function cardRoutes(router: Router): void {
       );
     }
 
-    const promo = body.promo ? requireReadyPromo(promosRes, usedRes, card) : null;
-    const { lines, totalCents, discountCents, itemCount, stampItems } = priceOrder(menu, qtyById, promo, body.promo?.itemId);
+    const stampItems = countStampItems(menu, qtyById);
     const earned = shop.stamp_mode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
     const today = (todayRes.results as { n: number }[])[0]?.n ?? 0;
     const added =
@@ -292,41 +297,30 @@ export function cardRoutes(router: Router): void {
           } added.`
         : null;
 
+    // Promos and the free box count this order's stamps: at 4 stamps, 2 cups reach a stamp-5
+    // promo now; at 9 stamps on a 10-box card, the next cup lands on the free box.
+    const stampsAfter = card.stamps + added;
+    const promo = body.promo ? requireReadyPromo(promosRes, usedRes, stampsAfter) : null;
+    if (body.reward) assertReachesFreeBox(stampsAfter, shop.stamps_required);
+    const priced = priceOrder(menu, qtyById, {
+      promo,
+      promoItemId: body.promo?.itemId,
+      freeItemId: body.reward?.itemId,
+      stampsBefore: card.stamps,
+    });
+
     const orderId = ulid(now);
-    // With a promo, the orders_promo_once index makes a second use fail, and the whole batch with it.
-    try {
-      await env.DB.batch([
-        env.DB.prepare(
-          `INSERT INTO orders (id, shop_id, card_id, status, is_reward, approved_via, total_cents, item_count,
-             stamps_awarded, discount_cents, promo_step, promo_round, created_at)
-           VALUES (?, ?, ?, 'approved', 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(
-          orderId,
-          shop.id,
-          card.id,
-          approvedVia,
-          totalCents,
-          itemCount,
-          added,
-          discountCents,
-          promo?.step ?? null,
-          promo ? card.rewards_redeemed : null,
-          now,
-        ),
-        ...lines.map((line) =>
-          env.DB.prepare(
-            `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          ).bind(ulid(now), orderId, line.item.id, line.item.name, line.priceCents, line.qty, line.item.earns_stamp),
-        ),
-        env.DB.prepare(
-          `UPDATE cards SET stamps = stamps + ?, lifetime_stamps = lifetime_stamps + ?, last_visit_at = ? WHERE id = ?`,
-        ).bind(added, added, now, card.id),
-      ]);
-    } catch (err) {
-      if (promo && isUniqueError(err)) throw new HttpError(409, PROMO_USED_MESSAGE, "promo_used");
-      throw err;
-    }
+    await saveOrder(env.DB, {
+      orderId,
+      shopId: shop.id,
+      card,
+      approvedVia,
+      priced,
+      stampsAdded: added,
+      promo,
+      stampsUsed: body.reward ? shop.stamps_required : 0,
+      at: now,
+    });
 
     const updated = await getCardRow(env.DB, card.id);
     const view = await loadCardView(env.DB, shop, updated);
@@ -338,76 +332,7 @@ export function cardRoutes(router: Router): void {
         stampsEarned: earned,
         limitNote,
         approvedAt: now,
-        discountCents,
-      } satisfies OrderResult,
-      201,
-    );
-  });
-
-  // Uses a full card for one free drink. The barista holds "Hold to give" on the customer's phone.
-  router.post("/api/card/redeem", async ({ env, req }) => {
-    const { card, shop } = await requireCard(env, req);
-    const { itemId, pin } = await readJson(req, redeemSchema);
-    const now = Date.now();
-    assertCanStamp(shop, card, now);
-
-    const item = await env.DB.prepare(
-      `SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items
-       WHERE id = ? AND shop_id = ? AND is_archived = 0 AND is_available = 1`,
-    )
-      .bind(itemId, shop.id)
-      .first<MenuRow>();
-    if (!item) throw new HttpError(409, "That drink is sold out. Pick another one.", "menu_changed");
-    if (!item.earns_stamp) throw new HttpError(400, "Pick a drink that's part of the stamp card.");
-    if (card.stamps < shop.stamps_required) {
-      const missing = shop.stamps_required - card.stamps;
-      throw new HttpError(409, `You need ${missing} more ${missing === 1 ? "stamp" : "stamps"} for ${shop.reward_text}.`, "not_enough_stamps");
-    }
-    const approvedVia = await checkBaristaPin(env.DB, shop, card, pin, now);
-
-    const required = shop.stamps_required;
-    const orderId = ulid(now);
-    // The order is only inserted while the card still has enough stamps, and the other two
-    // statements only run if that order exists. D1 runs a batch as one transaction, so a
-    // double tap can't use the same stamps twice.
-    const [insertRes] = await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO orders (id, shop_id, card_id, status, is_reward, approved_via, total_cents, item_count, stamps_awarded, stamps_used, created_at)
-         SELECT ?1, ?2, id, 'approved', 1, ?6, 0, 1, 0, ?3, ?4 FROM cards
-         WHERE id = ?5 AND stamps >= ?3 AND is_blocked = 0`,
-      ).bind(orderId, shop.id, required, now, card.id, approvedVia),
-      env.DB.prepare(
-        `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp)
-         SELECT ?, id, ?, ?, 0, 1, 1 FROM orders WHERE id = ?`,
-      ).bind(ulid(now), item.id, item.name, orderId),
-      env.DB.prepare(
-        `UPDATE cards SET stamps = stamps - ?1, rewards_redeemed = rewards_redeemed + 1, last_visit_at = ?2
-         WHERE id = ?3 AND EXISTS (SELECT 1 FROM orders WHERE id = ?4)`,
-      ).bind(required, now, card.id, orderId),
-    ]);
-
-    if (insertRes.meta.changes === 0) {
-      const missing = Math.max(0, required - card.stamps);
-      throw new HttpError(
-        409,
-        missing > 0
-          ? `You need ${missing} more ${missing === 1 ? "stamp" : "stamps"} for ${shop.reward_text}.`
-          : "This reward was already used.",
-        "not_enough_stamps",
-      );
-    }
-
-    const updated = await getCardRow(env.DB, card.id);
-    const view = await loadCardView(env.DB, shop, updated);
-    return json(
-      {
-        ...view,
-        orderId,
-        stampsAdded: 0,
-        stampsEarned: 0,
-        limitNote: null,
-        approvedAt: now,
-        discountCents: 0,
+        discountCents: priced.discountCents,
       } satisfies OrderResult,
       201,
     );

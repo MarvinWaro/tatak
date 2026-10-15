@@ -564,6 +564,25 @@ a {
   font-weight: 800;
 }
 
+/* The free box when the next stamp lands on it: filled with ink so it reads "ready". */
+.slot-empty--ready {
+  background: var(--ink);
+  color: var(--bond);
+  animation: free-ready 1.6s ease-in-out infinite;
+}
+
+@keyframes free-ready {
+  50% {
+    transform: scale(1.07);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slot-empty--ready {
+    animation: none;
+  }
+}
+
 /* A promo stamp, e.g. "50% off": dashed like the others, but in the shop's ink. */
 .slot-empty--promo {
   border-color: var(--ink);
@@ -914,6 +933,11 @@ a {
   color: var(--bond);
 }
 
+/* On the yellow free-item screen, the free and promo lines switch to ink so they still stand out. */
+.handoff--reward .handoff-lines .handoff-promo {
+  color: var(--ink);
+}
+
 .handoff-lines .qty {
   font-variant-numeric: tabular-nums;
   margin-right: 6px;
@@ -949,6 +973,11 @@ a {
   color: var(--roast);
   font-weight: 800;
   font-size: var(--text-sm);
+}
+
+.handoff--reward .handoff-earn {
+  background: var(--ink);
+  color: var(--bond);
 }
 
 .handoff-hold {
