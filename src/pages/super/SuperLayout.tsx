@@ -18,6 +18,7 @@ export function useShops(): SuperShop[] {
 const TABS: Tab[] = [
   { to: "/super", label: "Shops", icon: "store" },
   { to: "/super/transactions", label: "Transactions", icon: "receipt" },
+  { to: "/super/usage", label: "Usage", icon: "chart" },
 ];
 
 export function SuperLayout({ path, children }: { path: string; children: ReactNode }) {

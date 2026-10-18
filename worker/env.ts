@@ -6,6 +6,8 @@ export interface D1Meta {
   last_row_id: number;
   rows_read?: number;
   rows_written?: number;
+  /** Size of the whole database after the query, in bytes. */
+  size_after?: number;
 }
 
 export interface D1Result<T = any> {
@@ -28,4 +30,10 @@ export interface D1Database {
 
 export interface Env {
   DB: D1Database;
+  /** Cloudflare account ID, for the super admin Usage page (wrangler.jsonc vars). */
+  CF_ACCOUNT_ID?: string;
+  /** Read-only "Account Analytics: Read" API token (a Worker secret; .dev.vars locally). */
+  CF_ANALYTICS_TOKEN?: string;
+  /** JSON list of the systems on this account: [{ name, script, databaseId }] (wrangler.jsonc vars). */
+  USAGE_SYSTEMS?: string;
 }

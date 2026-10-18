@@ -16,6 +16,7 @@ import { Shops } from "./pages/super/Shops";
 import { SuperLayout } from "./pages/super/SuperLayout";
 import { SuperLogin } from "./pages/super/SuperLogin";
 import { Transactions } from "./pages/super/Transactions";
+import { Usage } from "./pages/super/Usage";
 
 const ADMIN_PAGES: Record<string, () => JSX.Element> = {
   "/admin": Sales,
@@ -28,6 +29,7 @@ const ADMIN_PAGES: Record<string, () => JSX.Element> = {
 const SUPER_PAGES: Record<string, () => JSX.Element> = {
   "/super": Shops,
   "/super/transactions": Transactions,
+  "/super/usage": Usage,
 };
 
 function Routes() {

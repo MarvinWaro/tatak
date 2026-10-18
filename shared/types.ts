@@ -235,3 +235,44 @@ export interface ApiErrorBody {
   error: string;
   code?: string;
 }
+
+// ---- Super admin: Cloudflare usage ----
+
+/** Free plan limits. The daily ones are shared by every system on the account and reset at 00:00 UTC (8 AM Manila). */
+export const FREE_LIMITS = {
+  requests: 100_000,
+  rowsRead: 5_000_000,
+  rowsWritten: 100_000,
+  databaseBytes: 500 * 1024 * 1024,
+  accountStorageBytes: 5 * 1024 * 1024 * 1024,
+} as const;
+
+export interface UsageNumbers {
+  requests: number;
+  rowsRead: number;
+  rowsWritten: number;
+}
+
+/** One app on the account (Tatak, NEXA): its Worker and its database. */
+export interface UsageSystem extends UsageNumbers {
+  name: string;
+  /** Database size in bytes, or null when Cloudflare hasn't reported it. */
+  databaseBytes: number | null;
+}
+
+export interface UsageReport {
+  /** False until CF_ANALYTICS_TOKEN is set; then only Tatak's database size is shown. */
+  configured: boolean;
+  /** What went wrong asking Cloudflare, in plain words, or null. */
+  error: string | null;
+  fetchedAt: number;
+  /** When today's counters go back to 0 (next 00:00 UTC). */
+  resetsAt: number;
+  /** Today, the whole account: this is what the daily limits count. */
+  today: UsageNumbers;
+  systems: UsageSystem[];
+  /** All databases on the account together. */
+  storageBytes: number;
+  /** The last 7 days for the whole account, oldest first. */
+  days: (UsageNumbers & { date: string })[];
+}
