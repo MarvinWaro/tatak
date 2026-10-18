@@ -11,6 +11,7 @@ import {
   themeVars,
 } from "../../../shared/theme";
 import { Icon } from "../../components/Icon";
+import { PasswordInput } from "../../components/PasswordInput";
 import { StampCard } from "../../components/StampCard";
 import { useToast } from "../../components/Toast";
 import { api, errorMessage } from "../../lib/api";
@@ -736,28 +737,11 @@ function PasswordForm() {
       <div className="form-grid form-grid--2">
         <div className="field">
           <label htmlFor="pw-current">Current password</label>
-          <input
-            id="pw-current"
-            className="input"
-            type="password"
-            autoComplete="current-password"
-            value={current}
-            onChange={(e) => setCurrent(e.target.value)}
-            required
-          />
+          <PasswordInput id="pw-current" value={current} onChange={setCurrent} autoComplete="current-password" />
         </div>
         <div className="field">
           <label htmlFor="pw-new">New password</label>
-          <input
-            id="pw-new"
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            minLength={8}
-            value={next}
-            onChange={(e) => setNext(e.target.value)}
-            required
-          />
+          <PasswordInput id="pw-new" value={next} onChange={setNext} autoComplete="new-password" minLength={8} />
         </div>
       </div>
       {error && <p className="form-error">{error}</p>}
