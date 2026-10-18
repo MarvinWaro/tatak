@@ -32,21 +32,26 @@ const baristaPin = z
   .regex(/^\d{4}$/, "The PIN is 4 numbers.")
   .optional();
 
+const id = z.string().min(1).max(40);
+/** A menu item and, when it has sizes, which size. */
+const itemRef = { itemId: id, sizeId: id.optional() };
+
 export const orderSchema = z.object({
   pin: baristaPin,
   items: z
     .array(
       z.object({
-        id: z.string().min(1).max(40),
+        id,
+        sizeId: id.optional(),
         qty: z.number().int().min(1).max(20, "That's a lot of coffee. Keep each item to 20 or fewer."),
       }),
     )
     .min(1, "Pick at least one item.")
     .max(15, "Keep an order to 15 different items or fewer."),
-  /** Use the card's ready promo on this order. itemId is the item that gets the discount. */
-  promo: z.object({ itemId: z.string().min(1).max(40).optional() }).optional(),
-  /** This order reaches the free box: itemId is the item that is free. */
-  reward: z.object({ itemId: z.string().min(1).max(40) }).optional(),
+  /** Use the card's ready promo on this order: the item (and size) that gets the discount. */
+  promo: z.object({ itemId: id.optional(), sizeId: id.optional() }).optional(),
+  /** This order reaches the free box: the item (and size) that is free. */
+  reward: z.object(itemRef).optional(),
 });
 
 const EASY_PINS = new Set(["0123", "1234", "2345", "3456", "4567", "5678", "6789", "9876", "8765", "7654", "6543", "5432", "4321", "3210"]);
@@ -118,11 +123,23 @@ const pesos = z
   .max(100000, "That price is too high.")
   .transform((v) => Math.round(v * 100));
 
+export const MAX_SIZES = 6;
+
+/** An item's sizes, each with its own price. Sizes with an id already exist; the rest are new. */
+const sizesSchema = z
+  .array(z.object({ id: id.optional(), name: name("Size name", 20), price: pesos }))
+  .max(MAX_SIZES, `Use ${MAX_SIZES} sizes or fewer.`)
+  .refine(
+    (list) => new Set(list.map((s) => s.name.toLowerCase())).size === list.length,
+    "Each size needs a different name.",
+  );
+
 export const menuItemSchema = z.object({
   name: name("Item name"),
   price: pesos,
   earnsStamp: z.boolean().default(true),
   isAvailable: z.boolean().default(true),
+  sizes: sizesSchema.default([]),
 });
 
 export const menuItemPatchSchema = z
@@ -131,6 +148,7 @@ export const menuItemPatchSchema = z
     price: pesos,
     earnsStamp: z.boolean(),
     isAvailable: z.boolean(),
+    sizes: sizesSchema,
   })
   .partial();
 

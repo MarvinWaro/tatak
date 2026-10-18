@@ -1,7 +1,7 @@
 import { type ReactNode, createContext, useContext, useEffect } from "react";
 import type { ShopSettings } from "../../../shared/types";
-import { Icon, type IconName } from "../../components/Icon";
-import { Link } from "../../lib/router";
+import { Icon } from "../../components/Icon";
+import { type Tab, TabBar } from "../../components/TabBar";
 import { useApi } from "../../lib/useApi";
 
 interface ShopContextValue {
@@ -17,7 +17,7 @@ export function useShop(): ShopContextValue {
   return value;
 }
 
-const TABS: { to: string; label: string; icon: IconName }[] = [
+const TABS: Tab[] = [
   { to: "/admin", label: "Sales", icon: "chart" },
   { to: "/admin/orders", label: "Orders", icon: "receipt" },
   { to: "/admin/menu", label: "Menu", icon: "menu" },
@@ -66,14 +66,7 @@ export function AdminLayout({ path, children }: { path: string; children: ReactN
           </a>
         )}
       </header>
-      <nav className="tabs" aria-label="Admin">
-        {TABS.map((t) => (
-          <Link key={t.to} to={t.to} className="tab" aria-current={path === t.to ? "page" : undefined}>
-            <Icon name={t.icon} />
-            {t.label}
-          </Link>
-        ))}
-      </nav>
+      <TabBar tabs={TABS} path={path} label="Admin" />
       <main className="admin-main">
         {shop ? (
           <ShopContext.Provider value={{ shop, setShop: setData }}>{children}</ShopContext.Provider>

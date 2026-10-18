@@ -3,11 +3,21 @@ import type { CardColor, InkColor } from "./theme";
 
 export type StampMode = "per_cup" | "per_order";
 
-export interface PublicMenuItem {
+/** One size of a menu item, with its own price: "Large", ₱120. */
+export interface MenuSize {
   id: string;
   name: string;
   priceCents: number;
+}
+
+export interface PublicMenuItem {
+  id: string;
+  name: string;
+  /** The price when the item has no sizes; the lowest size price when it has some. */
+  priceCents: number;
   earnsStamp: boolean;
+  /** Empty when the item has a single price. */
+  sizes: MenuSize[];
 }
 
 /** A promo on one stamp of the card, e.g. stamp 5 = 50% off one item. */

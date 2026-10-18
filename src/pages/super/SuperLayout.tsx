@@ -1,9 +1,9 @@
-import { type CSSProperties, type ReactNode, createContext, useContext, useEffect, useState } from "react";
+import { type ReactNode, createContext, useContext, useEffect, useState } from "react";
 import type { SuperShop } from "../../../shared/types";
-import { Icon, type IconName } from "../../components/Icon";
+import { type Tab, TabBar } from "../../components/TabBar";
 import { useToast } from "../../components/Toast";
 import { api, errorMessage } from "../../lib/api";
-import { Link, navigate } from "../../lib/router";
+import { navigate } from "../../lib/router";
 import { useApi } from "../../lib/useApi";
 
 const ShopsContext = createContext<SuperShop[] | null>(null);
@@ -15,7 +15,7 @@ export function useShops(): SuperShop[] {
   return shops;
 }
 
-const TABS: { to: string; label: string; icon: IconName }[] = [
+const TABS: Tab[] = [
   { to: "/super", label: "Shops", icon: "store" },
   { to: "/super/transactions", label: "Transactions", icon: "receipt" },
 ];
@@ -63,14 +63,7 @@ export function SuperLayout({ path, children }: { path: string; children: ReactN
           {loggingOut ? "Logging out…" : "Log out"}
         </button>
       </header>
-      <nav className="tabs" aria-label="Super admin" style={{ "--tab-count": TABS.length } as CSSProperties}>
-        {TABS.map((t) => (
-          <Link key={t.to} to={t.to} className="tab" aria-current={path === t.to ? "page" : undefined}>
-            <Icon name={t.icon} />
-            {t.label}
-          </Link>
-        ))}
-      </nav>
+      <TabBar tabs={TABS} path={path} label="Super admin" />
       <main className="admin-main">
         {shops ? (
           <ShopsContext.Provider value={shops}>{children}</ShopsContext.Provider>

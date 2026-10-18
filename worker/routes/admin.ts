@@ -1,16 +1,18 @@
 // Barista admin: shop settings, menu, customers.
-import type { AdminCustomer, CustomerPromos, Promo } from "../../shared/types";
+import type { AdminCustomer, AdminMenuItem, CustomerPromos, Promo } from "../../shared/types";
 import { type ShopRow, hashPassword, requireShop } from "../auth";
-import type { Env } from "../env";
+import type { D1Database, D1PreparedStatement, Env } from "../env";
 import { HttpError, json, readJson } from "../http";
 import { normalizeCode, ulid } from "../ids";
 import {
   assertReachesFreeBox,
+  buildLines,
   countStampItems,
   priceOrder,
   promoStatements,
   requireReadyPromo,
   saveOrder,
+  sizesForItemsSql,
 } from "../orders";
 import type { Router } from "../router";
 import {
@@ -29,7 +31,10 @@ import {
   type CardRow,
   type MenuRow,
   type PromoRow,
+  type SizeRow,
   PROMOS_SQL,
+  SIZES_SQL,
+  sizesByItem,
   toAdminMenuItem,
   toPromo,
   toShopSettings,
@@ -49,6 +54,69 @@ const toCustomer = (c: CardRow): AdminCustomer => ({
   lastVisitAt: c.last_visit_at,
   createdAt: c.created_at,
 });
+
+const MENU_ITEM_SQL =
+  "SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items WHERE id = ? AND shop_id = ? AND is_archived = 0";
+
+/** The whole menu with sizes (sold-out items included), for the admin. */
+async function loadAdminMenu(db: D1Database, shopId: string): Promise<AdminMenuItem[]> {
+  const [rows, sizes] = await db.batch([db.prepare(ADMIN_MENU_SQL).bind(shopId), db.prepare(SIZES_SQL).bind(shopId)]);
+  const bySize = sizesByItem(sizes.results as SizeRow[]);
+  return (rows.results as MenuRow[]).map((r) => toAdminMenuItem(r, bySize));
+}
+
+/** One menu item with its sizes, or a 404 when it isn't this shop's. */
+async function loadAdminItem(db: D1Database, shopId: string, id: string): Promise<AdminMenuItem> {
+  const [row, sizes] = await db.batch([
+    db.prepare(MENU_ITEM_SQL).bind(id, shopId),
+    db.prepare(sizesForItemsSql(1)).bind(id),
+  ]);
+  const item = (row.results as MenuRow[])[0];
+  if (!item) throw new HttpError(404, "That menu item was removed.");
+  return toAdminMenuItem(item, sizesByItem(sizes.results as SizeRow[]));
+}
+
+type SizeInput = { id?: string; name: string; price: number };
+
+/** An item with sizes shows "from" its lowest size price; without sizes it keeps its own price. */
+const itemPrice = (price: number, sizes: SizeInput[]): number =>
+  sizes.length > 0 ? Math.min(...sizes.map((z) => z.price)) : price;
+
+/**
+ * Makes an item's active sizes exactly `sizes`: kept sizes are updated, new ones added, and the
+ * rest archived (not deleted), so old orders keep their link. `existing` is the item's active size ids.
+ */
+function sizeStatements(
+  db: D1Database,
+  itemId: string,
+  existing: string[],
+  sizes: SizeInput[],
+  now: number,
+): D1PreparedStatement[] {
+  const kept = new Set(sizes.flatMap((z) => (z.id ? [z.id] : [])));
+  if ([...kept].some((id) => !existing.includes(id))) {
+    throw new HttpError(409, "A size was changed somewhere else. Reload the menu and try again.");
+  }
+  return [
+    ...existing
+      .filter((id) => !kept.has(id))
+      .map((id) =>
+        db.prepare("UPDATE menu_item_sizes SET is_archived = 1 WHERE id = ? AND menu_item_id = ?").bind(id, itemId),
+      ),
+    ...sizes.map((z, i) =>
+      z.id
+        ? db
+            .prepare("UPDATE menu_item_sizes SET name = ?, price_cents = ?, sort_order = ? WHERE id = ? AND menu_item_id = ?")
+            .bind(z.name, z.price, i, z.id, itemId)
+        : db
+            .prepare(
+              `INSERT INTO menu_item_sizes (id, menu_item_id, name, price_cents, sort_order, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+            )
+            .bind(ulid(now), itemId, z.name, z.price, i, now),
+    ),
+  ];
+}
 
 async function requireShopCard(env: Env, shopId: string, cardId: string): Promise<CardRow> {
   const card = await env.DB.prepare("SELECT * FROM cards WHERE id = ? AND shop_id = ?").bind(cardId, shopId).first<CardRow>();
@@ -165,52 +233,63 @@ export function adminRoutes(router: Router): void {
 
   router.get("/api/admin/menu", async ({ env, req }) => {
     const shop = await requireShop(env, req);
-    const rows = await env.DB.prepare(ADMIN_MENU_SQL).bind(shop.id).all<MenuRow>();
-    return json(rows.results.map(toAdminMenuItem));
+    return json(await loadAdminMenu(env.DB, shop.id));
   });
 
   router.post("/api/admin/menu", async ({ env, req }) => {
     const shop = await requireShop(env, req);
     const body = await readJson(req, menuItemSchema);
     const id = ulid();
-    await env.DB.prepare(
-      `INSERT INTO menu_items (id, shop_id, name, price_cents, earns_stamp, is_available, sort_order, created_at)
-       VALUES (?, ?, ?, ?, ?, ?,
-         (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM menu_items WHERE shop_id = ?), ?)`,
-    )
-      .bind(id, shop.id, body.name, body.price, body.earnsStamp ? 1 : 0, body.isAvailable ? 1 : 0, shop.id, Date.now())
-      .run();
-    const row = await env.DB.prepare(
-      "SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items WHERE id = ?",
-    )
-      .bind(id)
-      .first<MenuRow>();
-    return json(toAdminMenuItem(row!), 201);
+    const now = Date.now();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO menu_items (id, shop_id, name, price_cents, earns_stamp, is_available, sort_order, created_at)
+         VALUES (?, ?, ?, ?, ?, ?,
+           (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM menu_items WHERE shop_id = ?), ?)`,
+      ).bind(
+        id,
+        shop.id,
+        body.name,
+        itemPrice(body.price, body.sizes ?? []),
+        body.earnsStamp ? 1 : 0,
+        body.isAvailable ? 1 : 0,
+        shop.id,
+        now,
+      ),
+      ...sizeStatements(env.DB, id, [], body.sizes ?? [], now),
+    ]);
+    return json(await loadAdminItem(env.DB, shop.id, id), 201);
   });
 
   router.patch("/api/admin/menu/:id", async ({ env, req, params }) => {
     const shop = await requireShop(env, req);
     const patch = await readJson(req, menuItemPatchSchema);
+    const current = await loadAdminItem(env.DB, shop.id, params.id);
+
     const sets: string[] = [];
     const values: unknown[] = [];
     if (patch.name !== undefined) (sets.push("name = ?"), values.push(patch.name));
-    if (patch.price !== undefined) (sets.push("price_cents = ?"), values.push(patch.price));
+    if (patch.price !== undefined || patch.sizes !== undefined) {
+      const price = patch.price ?? current.priceCents;
+      sets.push("price_cents = ?");
+      values.push(patch.sizes ? itemPrice(price, patch.sizes) : price);
+    }
     if (patch.earnsStamp !== undefined) (sets.push("earns_stamp = ?"), values.push(patch.earnsStamp ? 1 : 0));
     if (patch.isAvailable !== undefined) (sets.push("is_available = ?"), values.push(patch.isAvailable ? 1 : 0));
     if (sets.length === 0) throw new HttpError(400, "Nothing to change.");
 
-    const res = await env.DB.prepare(
-      `UPDATE menu_items SET ${sets.join(", ")} WHERE id = ? AND shop_id = ? AND is_archived = 0`,
-    )
-      .bind(...values, params.id, shop.id)
-      .run();
-    if (res.meta.changes === 0) throw new HttpError(404, "That menu item was removed.");
-    const row = await env.DB.prepare(
-      "SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items WHERE id = ?",
-    )
-      .bind(params.id)
-      .first<MenuRow>();
-    return json(toAdminMenuItem(row!));
+    const now = Date.now();
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE menu_items SET ${sets.join(", ")} WHERE id = ? AND shop_id = ? AND is_archived = 0`).bind(
+        ...values,
+        params.id,
+        shop.id,
+      ),
+      ...(patch.sizes
+        ? sizeStatements(env.DB, params.id, current.sizes.map((z) => z.id), patch.sizes, now)
+        : []),
+    ]);
+    return json(await loadAdminItem(env.DB, shop.id, params.id));
   });
 
   // Removing keeps the row (archived) so old orders still link to it.
@@ -230,8 +309,7 @@ export function adminRoutes(router: Router): void {
         env.DB.prepare("UPDATE menu_items SET sort_order = ? WHERE id = ? AND shop_id = ?").bind(i, id, shop.id),
       ),
     );
-    const rows = await env.DB.prepare(ADMIN_MENU_SQL).bind(shop.id).all<MenuRow>();
-    return json(rows.results.map(toAdminMenuItem));
+    return json(await loadAdminMenu(env.DB, shop.id));
   });
 
   // ---- Promos on the card ----
@@ -319,28 +397,28 @@ export function adminRoutes(router: Router): void {
 
     const card = await requireShopCard(env, shop.id, params.id);
 
-    const qtyById = new Map<string, number>();
-    for (const line of body.items) qtyById.set(line.id, (qtyById.get(line.id) ?? 0) + line.qty);
-    const ids = [...qtyById.keys()];
-    const [menuRes, promosRes, usedRes] = await env.DB.batch([
+    const ids = [...new Set(body.items.map((line) => line.id))];
+    const [menuRes, sizesRes, promosRes, usedRes] = await env.DB.batch([
       env.DB.prepare(
         `SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items
          WHERE shop_id = ? AND is_archived = 0 AND id IN (${ids.map(() => "?").join(",")})`,
       ).bind(shop.id, ...ids),
+      env.DB.prepare(sizesForItemsSql(ids.length)).bind(...ids),
       ...(body.promo ? promoStatements(env.DB, shop.id, card) : []),
     ]);
     const menu = menuRes.results as MenuRow[];
     if (menu.length !== ids.length) throw new HttpError(409, "Something in this purchase was removed from the menu.");
 
-    const stampItems = countStampItems(menu, qtyById);
+    const lines = buildLines(menu, sizesRes.results as SizeRow[], body.items);
+    const stampItems = countStampItems(lines);
     const stamps = shop.stamp_mode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
     const stampsAfter = card.stamps + stamps;
     const promo = body.promo ? requireReadyPromo(promosRes, usedRes, stampsAfter) : null;
     if (body.reward) assertReachesFreeBox(stampsAfter, shop.stamps_required);
-    const priced = priceOrder(menu, qtyById, {
+    const priced = priceOrder(lines, {
       promo,
-      promoItemId: body.promo?.itemId,
-      freeItemId: body.reward?.itemId,
+      promoItem: body.promo,
+      freeItem: body.reward,
       stampsBefore: card.stamps,
     });
 
