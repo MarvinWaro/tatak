@@ -1,4 +1,4 @@
-import { type CSSProperties, useState } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 import { PROMO_PRESETS } from "../../../shared/promos";
 import type { Promo, ShopSettings, StampMode } from "../../../shared/types";
 import {
@@ -16,6 +16,7 @@ import { useToast } from "../../components/Toast";
 import { api, errorMessage } from "../../lib/api";
 import { resizeLogo } from "../../lib/image";
 import { Link, navigate } from "../../lib/router";
+import { startTour, tourUnseen } from "../../lib/tour";
 import { useApi } from "../../lib/useApi";
 import { useShop } from "./AdminLayout";
 
@@ -39,9 +40,20 @@ export function Settings() {
     navigate("/login", { replace: true });
   };
 
+  // The first time an owner opens Settings, walk them through it once all sections have loaded.
+  useEffect(() => {
+    if (promos && tourUnseen("settings")) void startTour("settings");
+  }, [promos]);
+
   return (
     <div className="stack" style={{ "--gap": "20px", maxWidth: 720 } as CSSProperties}>
-      <section className="panel stack" style={{ "--gap": "12px" } as CSSProperties}>
+      <div className="spread">
+        <span className="small muted">New here? Take a quick tour of your settings.</span>
+        <button className="btn btn--ghost btn--sm" onClick={() => void startTour("settings")}>
+          Show me around
+        </button>
+      </div>
+      <section className="panel stack" data-tour="link" style={{ "--gap": "12px" } as CSSProperties}>
         <h1 className="panel-title" style={{ margin: 0 }}>
           Your customer link
         </h1>
@@ -68,7 +80,7 @@ export function Settings() {
       <ShopForm />
       <PasswordForm />
 
-      <section className="panel">
+      <section className="panel" data-tour="account">
         <h2 className="panel-title">Account</h2>
         <p className="small muted" style={{ marginBottom: 12 }}>
           Logged in as {shop.email}
@@ -136,7 +148,7 @@ function BrandingSettings({ promos }: { promos: Promo[] }) {
   };
 
   return (
-    <section className="panel stack">
+    <section className="panel stack" data-tour="design">
       <h2 className="panel-title" style={{ margin: 0 }}>
         Card design
       </h2>
@@ -296,7 +308,7 @@ function PromoSettings({ saved, onSaved }: { saved: Promo[]; onSaved: (p: Promo[
   };
 
   return (
-    <section className="panel stack">
+    <section className="panel stack" data-tour="promos">
       <h2 className="panel-title" style={{ margin: 0 }}>
         Promos on the card
       </h2>
@@ -451,7 +463,7 @@ function PinSettings() {
       : "Not set yet. Anyone holding the phone can stamp by holding the button. Set a PIN so only you can approve stamps.";
 
   return (
-    <section className="panel stack" style={{ "--gap": "12px" } as CSSProperties}>
+    <section className="panel stack" data-tour="pin" style={{ "--gap": "12px" } as CSSProperties}>
       <h2 className="panel-title" style={{ margin: 0 }}>
         Barista PIN
       </h2>
@@ -544,6 +556,7 @@ function ShopForm() {
   return (
     <form
       className="panel stack"
+      data-tour="card"
       onSubmit={(e) => {
         e.preventDefault();
         void save();
@@ -603,72 +616,75 @@ function ShopForm() {
         ))}
       </fieldset>
 
-      <h2 className="panel-title" style={{ margin: "8px 0 0" }}>
-        Limits
-      </h2>
-      <p className="small muted">These stop people from stamping their own phone away from your stall.</p>
-      <div className="form-grid form-grid--2">
-        <div className="field">
-          <label htmlFor="s-cooldown">Minutes between stamped orders</label>
-          <input
-            id="s-cooldown"
-            className="input"
-            type="number"
-            min={0}
-            max={240}
-            value={form.cooldownMinutes}
-            onChange={(e) => set("cooldownMinutes", e.target.value)}
-          />
-          <span className="field-hint">Per card. 0 means no wait.</span>
-        </div>
-        <div className="field">
-          <label htmlFor="s-daily">Most stamps per card per day</label>
-          <input
-            id="s-daily"
-            className="input"
-            type="number"
-            min={0}
-            max={100}
-            value={form.maxStampsPerDay}
-            onChange={(e) => set("maxStampsPerDay", e.target.value)}
-          />
-          <span className="field-hint">0 means no limit. Orders past the limit are still saved.</span>
-        </div>
-      </div>
-
-      <label className="check">
-        <input type="checkbox" checked={form.limitHours} onChange={(e) => set("limitHours", e.target.checked)} />
-        <span>
-          Only allow stamps during opening hours
-          <span className="field-hint" style={{ display: "block" }}>
-            Uses Philippine time.
-          </span>
-        </span>
-      </label>
-      {form.limitHours && (
+      <div className="stack" data-tour="limits">
+        <h2 className="panel-title" style={{ margin: "8px 0 0" }}>
+          Limits
+        </h2>
+        <p className="small muted">These stop people from stamping their own phone away from your stall.</p>
         <div className="form-grid form-grid--2">
           <div className="field">
-            <label htmlFor="s-open">Opens</label>
+            <label htmlFor="s-cooldown">Minutes between stamped orders</label>
             <input
-              id="s-open"
+              id="s-cooldown"
               className="input"
-              type="time"
-              value={form.openTime}
-              onChange={(e) => set("openTime", e.target.value)}
+              type="number"
+              min={0}
+              max={240}
+              value={form.cooldownMinutes}
+              onChange={(e) => set("cooldownMinutes", e.target.value)}
             />
+            <span className="field-hint">Per card. 0 means no wait.</span>
           </div>
           <div className="field">
-            <label htmlFor="s-close">Closes</label>
+            <label htmlFor="s-daily">Most stamps per card per day</label>
             <input
-              id="s-close"
+              id="s-daily"
               className="input"
-              type="time"
-              value={form.closeTime}
-              onChange={(e) => set("closeTime", e.target.value)}
+              type="number"
+              min={0}
+              max={100}
+              value={form.maxStampsPerDay}
+              onChange={(e) => set("maxStampsPerDay", e.target.value)}
             />
+            <span className="field-hint">0 means no limit. Orders past the limit are still saved.</span>
           </div>
         </div>
-      )}
+
+        <label className="check">
+          <input type="checkbox" checked={form.limitHours} onChange={(e) => set("limitHours", e.target.checked)} />
+          <span>
+            Only allow stamps during opening hours
+            <span className="field-hint" style={{ display: "block" }}>
+              Uses Philippine time.
+            </span>
+          </span>
+        </label>
+        {form.limitHours && (
+          <div className="form-grid form-grid--2">
+            <div className="field">
+              <label htmlFor="s-open">Opens</label>
+              <input
+                id="s-open"
+                className="input"
+                type="time"
+                value={form.openTime}
+                onChange={(e) => set("openTime", e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="s-close">Closes</label>
+              <input
+                id="s-close"
+                className="input"
+                type="time"
+                value={form.closeTime}
+                onChange={(e) => set("closeTime", e.target.value)}
+              />
+            </div>
+          </div>
+        )}
+
+      </div>
 
       {error && (
         <p className="form-error" role="alert">

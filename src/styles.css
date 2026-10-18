@@ -747,6 +747,20 @@ a {
   background: #fbf8e6;
 }
 
+/* An item with sizes: its name on one row, then an indented row per size, with no line between. */
+.menu-row.menu-row--group {
+  padding-bottom: 2px;
+}
+
+.menu-row.menu-row--size {
+  padding-left: 32px;
+}
+
+.menu-row--group + .menu-row--size,
+.menu-row--size + .menu-row--size {
+  border-top: 0;
+}
+
 .menu-name {
   font-weight: 700;
   line-height: 1.25;
@@ -1153,6 +1167,35 @@ a {
   background: var(--chalk);
 }
 
+/* Sizes of a menu item in the Menu editor: name, price, remove. */
+.sizes {
+  margin: 4px 0 16px;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.size-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 108px 44px;
+  gap: 8px;
+  align-items: center;
+}
+
+.sizes .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0 14px;
+}
+
+.sizes .chip .icon {
+  width: 16px;
+  height: 16px;
+}
+
 .hero-picker .chip[aria-pressed="true"] {
   background: var(--roast);
 }
@@ -1348,7 +1391,8 @@ a {
 
 .admin {
   min-height: 100vh;
-  padding-bottom: calc(84px + env(safe-area-inset-bottom));
+  /* Room for the floating tab bar, so the last item on a page isn't hidden behind it. */
+  padding-bottom: calc(104px + env(safe-area-inset-bottom));
 }
 
 .admin-top {
@@ -1376,32 +1420,64 @@ a {
   padding: 4px 16px 32px;
 }
 
+/* Phones: a dark bar floating above the screen edge. A yellow pill slides behind the current
+   tab; --active (its index) and --tab-count come from TabBar. */
 .tabs {
+  --pad: 6px;
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 12px;
+  right: 12px;
+  bottom: calc(10px + env(safe-area-inset-bottom));
   z-index: 20;
+  max-width: 520px;
+  margin: 0 auto;
   display: grid;
   grid-template-columns: repeat(var(--tab-count, 5), 1fr);
-  padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+  padding: var(--pad);
+  border-radius: 24px;
   background: var(--roast);
+  box-shadow: 0 12px 28px -12px rgba(42, 27, 20, 0.6);
+  isolation: isolate;
+}
+
+.tabs[data-active]::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: var(--pad);
+  bottom: var(--pad);
+  left: var(--pad);
+  width: calc((100% - 2 * var(--pad)) / var(--tab-count, 5));
+  border-radius: 18px;
+  background: var(--bond);
+  transform: translateX(calc(100% * var(--active, 0)));
+  transition: transform 320ms var(--ease-out);
 }
 
 .tab {
   display: grid;
   justify-items: center;
+  align-content: center;
   gap: 2px;
+  min-height: 54px;
   padding: 6px 2px;
-  border-radius: var(--r-sm);
+  border-radius: 18px;
   color: rgba(255, 255, 255, 0.72);
   font-size: 12px;
   font-weight: 600;
   text-decoration: none;
+  transition: color 200ms ease;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .tab[aria-current="page"] {
-  color: var(--bond);
+  color: var(--roast);
+  font-weight: 800;
+}
+
+.tab:focus-visible {
+  outline-color: var(--bond);
+  outline-offset: -3px;
 }
 
 .tab .icon {
@@ -1434,9 +1510,15 @@ a {
     padding: 8px 32px 48px;
     margin: 0;
   }
+  /* Wide screens: a full-height sidebar instead of the floating bar. */
   .tabs {
     position: sticky;
     top: 0;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    max-width: none;
+    margin: 0;
     grid-row: 1 / span 2;
     grid-column: 1;
     height: 100vh;
@@ -1444,15 +1526,23 @@ a {
     flex-direction: column;
     gap: 4px;
     padding: 24px 12px;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .tabs[data-active]::before {
+    display: none;
   }
   .tab {
     display: flex;
     align-items: center;
     gap: 12px;
+    min-height: 0;
     padding: 12px 14px;
+    border-radius: var(--r-sm);
     font-size: var(--text-md);
   }
   .tab[aria-current="page"] {
+    color: var(--bond);
     background: rgba(255, 255, 255, 0.08);
   }
 }
@@ -2215,4 +2305,68 @@ label.btn.is-busy {
   border: 0;
   padding: 0;
   margin: 0;
+}
+
+/* ---------- Settings tour (driver.js), in Tatak's own look ---------- */
+
+.driver-popover.tatak-tour {
+  font-family: var(--font);
+  color: var(--roast);
+  border-radius: var(--r-lg);
+  padding: 18px;
+  max-width: min(320px, calc(100vw - 32px));
+  box-shadow: var(--shadow-card);
+}
+
+.driver-popover.tatak-tour .driver-popover-title {
+  font-size: var(--text-lg);
+  font-weight: 800;
+  font-stretch: 80%;
+  font-variation-settings: "wdth" 80;
+  line-height: 1.2;
+  padding-right: 32px;
+}
+
+.driver-popover.tatak-tour .driver-popover-description {
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  color: var(--roast-2);
+}
+
+.driver-popover.tatak-tour .driver-popover-progress-text {
+  font-size: var(--text-xs);
+  color: var(--roast-2);
+}
+
+.driver-popover.tatak-tour .driver-popover-footer-btn {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 2px solid var(--line);
+  border-radius: var(--r-md);
+  font-family: var(--font);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--roast);
+  background: var(--chalk);
+  display: inline-flex;
+  align-items: center;
+}
+
+.driver-popover.tatak-tour .driver-popover-next-btn {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--chalk);
+}
+
+.driver-popover.tatak-tour .driver-popover-close-btn {
+  width: 44px;
+  height: 44px;
+  font-size: 22px;
+  color: var(--roast-2);
+}
+
+.driver-popover.tatak-tour .driver-popover-footer-btn:focus-visible,
+.driver-popover.tatak-tour .driver-popover-close-btn:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 2px;
 }

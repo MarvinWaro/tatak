@@ -5,10 +5,37 @@ import type { Promo } from "../shared/types";
 import type { D1Database, D1PreparedStatement, D1Result } from "./env";
 import { HttpError } from "./http";
 import { ulid } from "./ids";
-import { type CardRow, type MenuRow, type PromoRow, PROMOS_SQL, PROMOS_USED_SQL, toPromo } from "./views";
+import {
+  type CardRow,
+  type MenuRow,
+  type PromoRow,
+  type SizeRow,
+  PROMOS_SQL,
+  PROMOS_USED_SQL,
+  toPromo,
+} from "./views";
+
+/** One line of an order as asked for: an item, its size (when it has sizes), and how many. */
+export interface OrderLine {
+  item: MenuRow;
+  sizeId: string | null;
+  /** The name as sold: "Spanish Latte (Large)", or just the item name without sizes. */
+  name: string;
+  /** Price of one unit: the size's price, or the item's. */
+  unitCents: number;
+  qty: number;
+}
+
+/** A menu item and, when it has sizes, which size. */
+export interface ItemRef {
+  itemId?: string;
+  sizeId?: string;
+}
 
 export interface PricedLine {
   item: MenuRow;
+  sizeId: string | null;
+  name: string;
   qty: number;
   /** Price per unit as charged. Lower on the promo unit, 0 on the free unit. */
   priceCents: number;
@@ -25,9 +52,9 @@ export interface PricedOrder {
 
 export interface OrderPerks {
   promo: Promo | null;
-  promoItemId: string | undefined;
+  promoItem: ItemRef | undefined;
   /** The free item, when this order reaches the free box. */
-  freeItemId: string | undefined;
+  freeItem: ItemRef | undefined;
   /** The card's stamps before this order (see promoNeedsStampItem). */
   stampsBefore: number;
 }
@@ -64,55 +91,104 @@ export function assertReachesFreeBox(stampsAfter: number, required: number): voi
   }
 }
 
-/** Units in the order that earn a stamp. */
-export function countStampItems(menu: MenuRow[], qtyById: Map<string, number>): number {
-  return menu.reduce((n, item) => n + (item.earns_stamp ? qtyById.get(item.id)! : 0), 0);
+/** The active sizes of the given items. The items were already checked to belong to the shop. */
+export const sizesForItemsSql = (count: number): string =>
+  `SELECT id, menu_item_id, name, price_cents FROM menu_item_sizes
+   WHERE is_archived = 0 AND menu_item_id IN (${Array(count).fill("?").join(",")})
+   ORDER BY sort_order, created_at`;
+
+/**
+ * Turns the asked-for lines into order lines: picks each size's price, names the item as sold
+ * ("Spanish Latte (Large)"), and merges repeated lines. An item with sizes must say which size;
+ * an item without sizes must not. Either mismatch means the menu changed under the customer.
+ */
+export function buildLines(
+  menu: MenuRow[],
+  sizes: SizeRow[],
+  asked: { id: string; sizeId?: string; qty: number }[],
+): OrderLine[] {
+  const byKey = new Map<string, OrderLine>();
+  for (const a of asked) {
+    const item = menu.find((m) => m.id === a.id)!;
+    const itemSizes = sizes.filter((z) => z.menu_item_id === item.id);
+    let line: Omit<OrderLine, "qty">;
+    if (itemSizes.length > 0) {
+      const size = itemSizes.find((z) => z.id === a.sizeId);
+      if (!size) {
+        throw new HttpError(409, `Pick a size for ${item.name}. Go back and check the order.`, "menu_changed");
+      }
+      line = { item, sizeId: size.id, name: `${item.name} (${size.name})`, unitCents: size.price_cents };
+    } else {
+      if (a.sizeId) {
+        throw new HttpError(409, `${item.name} has no sizes now. Go back and check the order.`, "menu_changed");
+      }
+      line = { item, sizeId: null, name: item.name, unitCents: item.price_cents };
+    }
+    const key = `${item.id}|${line.sizeId ?? ""}`;
+    const prev = byKey.get(key);
+    if (prev) prev.qty += a.qty;
+    else byKey.set(key, { ...line, qty: a.qty });
+  }
+  return [...byKey.values()];
 }
+
+/** Units in the order that earn a stamp. Every size of an item earns the same stamp. */
+export function countStampItems(lines: OrderLine[]): number {
+  return lines.reduce((n, l) => n + (l.item.earns_stamp ? l.qty : 0), 0);
+}
+
+const findLine = (lines: OrderLine[], ref: ItemRef | undefined): OrderLine | undefined =>
+  ref && lines.find((l) => l.item.id === ref.itemId && l.sizeId === (ref.sizeId ?? null));
 
 /**
  * Totals for an order. The promo unit and the free unit each become their own line, so the
  * per-item sales report adds up to what was charged and counts free items.
  */
-export function priceOrder(menu: MenuRow[], qtyById: Map<string, number>, perks: OrderPerks): PricedOrder {
+export function priceOrder(lines: OrderLine[], perks: OrderPerks): PricedOrder {
   const { promo } = perks;
-  let freeId: string | null = null;
-  if (perks.freeItemId !== undefined) {
-    const target = menu.find((m) => m.id === perks.freeItemId);
-    if (!target) throw new HttpError(400, "Pick which item in this order is free.", "reward_item");
-    if (!target.earns_stamp) throw new HttpError(400, "The free item has to be one that earns a stamp.", "reward_item");
-    freeId = target.id;
+  let freeLine: OrderLine | undefined;
+  if (perks.freeItem !== undefined) {
+    freeLine = findLine(lines, perks.freeItem);
+    if (!freeLine) throw new HttpError(400, "Pick which item in this order is free.", "reward_item");
+    if (!freeLine.item.earns_stamp) {
+      throw new HttpError(400, "The free item has to be one that earns a stamp.", "reward_item");
+    }
   }
 
   let discountCents = 0;
-  let promoId: string | null = null;
+  let promoLine: OrderLine | undefined;
   if (promo && promo.percentOff > 0) {
-    const target = menu.find((m) => m.id === perks.promoItemId);
-    if (!target) throw new HttpError(400, `Pick which item in this order gets the ${promo.label}.`, "promo_item");
-    if (!target.earns_stamp && promoNeedsStampItem(promo, perks.stampsBefore)) {
+    promoLine = findLine(lines, perks.promoItem);
+    if (!promoLine) throw new HttpError(400, `Pick which item in this order gets the ${promo.label}.`, "promo_item");
+    if (!promoLine.item.earns_stamp && promoNeedsStampItem(promo, perks.stampsBefore)) {
       throw new HttpError(400, `The ${promo.label} goes on a cup that earns a stamp. Pick one of those.`, "promo_item");
     }
-    promoId = target.id;
-    discountCents = promoDiscount(target.price_cents, promo.percentOff);
+    discountCents = promoDiscount(promoLine.unitCents, promo.percentOff);
   }
 
-  const lines: PricedLine[] = [];
+  const priced: PricedLine[] = [];
   let totalCents = 0;
   let itemCount = 0;
-  for (const item of menu) {
-    const qty = qtyById.get(item.id)!;
-    const free = item.id === freeId ? 1 : 0;
-    const discounted = item.id === promoId ? 1 : 0;
+  for (const line of lines) {
+    const { item, sizeId, name, unitCents, qty } = line;
+    const free = line === freeLine ? 1 : 0;
+    const discounted = line === promoLine ? 1 : 0;
     if (free + discounted > qty) {
-      throw new HttpError(400, "The free item and the promo need two different units. Add one more or pick another item.", "promo_item");
+      throw new HttpError(
+        400,
+        "The free item and the promo need two different units. Add one more or pick another item.",
+        "promo_item",
+      );
     }
     const full = qty - free - discounted;
-    if (full > 0) lines.push({ item, qty: full, priceCents: item.price_cents, isFree: false });
-    if (discounted) lines.push({ item, qty: 1, priceCents: item.price_cents - discountCents, isFree: false });
-    if (free) lines.push({ item, qty: 1, priceCents: 0, isFree: true });
-    totalCents += (qty - free) * item.price_cents;
+    const base = { item, sizeId, name };
+    if (full > 0) priced.push({ ...base, qty: full, priceCents: unitCents, isFree: false });
+    if (discounted) priced.push({ ...base, qty: 1, priceCents: unitCents - discountCents, isFree: false });
+    if (free) priced.push({ ...base, qty: 1, priceCents: 0, isFree: true });
+    totalCents += (qty - free) * unitCents;
     itemCount += qty;
   }
-  return { lines, totalCents: totalCents - discountCents, discountCents, itemCount };
+  return { lines: priced, totalCents: totalCents - discountCents, discountCents, itemCount };
 }
 
 export interface NewOrder {
@@ -164,14 +240,15 @@ export function orderStatements(db: D1Database, o: NewOrder): D1PreparedStatemen
     ...o.priced.lines.map((line) =>
       db
         .prepare(
-          `INSERT INTO order_items (id, order_id, menu_item_id, name, price_cents, qty, earns_stamp, is_free)
-           SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${savedOrder}`,
+          `INSERT INTO order_items (id, order_id, menu_item_id, size_id, name, price_cents, qty, earns_stamp, is_free)
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${savedOrder}`,
         )
         .bind(
           ulid(o.at),
           o.orderId,
           line.item.id,
-          line.item.name,
+          line.sizeId,
+          line.name,
           line.priceCents,
           line.qty,
           line.item.earns_stamp,

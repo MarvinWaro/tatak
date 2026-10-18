@@ -21,11 +21,15 @@ function fail(message) {
   process.exit(1);
 }
 
+// Wrangler never gets the keyboard: you already confirmed above, and on Windows the earlier
+// question keeps hold of the terminal, so a second prompt from Wrangler can't hear you type Y.
+// Without a keyboard, Wrangler answers its own "continue?" with yes.
 function wrangler(args, { quiet = true } = {}) {
   const res = spawnSync(process.execPath, [WRANGLER, ...args, ...EXTRA], {
     cwd: ROOT,
     encoding: "utf8",
-    stdio: quiet ? "pipe" : "inherit",
+    stdio: quiet ? "pipe" : ["ignore", "inherit", "inherit"],
+    env: { ...process.env, CI: "true" },
   });
   return { ok: res.status === 0, output: `${res.stdout ?? ""}${res.stderr ?? ""}`, stdout: res.stdout ?? "" };
 }

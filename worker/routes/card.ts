@@ -6,11 +6,13 @@ import { HttpError, json, readJson } from "../http";
 import { normalizeCode, randomCode, sha256Hex, ulid } from "../ids";
 import {
   assertReachesFreeBox,
+  buildLines,
   countStampItems,
   priceOrder,
   promoStatements,
   requireReadyPromo,
   saveOrder,
+  sizesForItemsSql,
 } from "../orders";
 import type { Router } from "../router";
 import {
@@ -26,7 +28,17 @@ import {
   restoreCardSchema,
   updateCardSchema,
 } from "../validate";
-import { type CardRow, type MenuRow, type PromoRow, MENU_SQL, PROMOS_SQL, loadCardView, toPublicShop } from "../views";
+import {
+  type CardRow,
+  type MenuRow,
+  type PromoRow,
+  type SizeRow,
+  MENU_SQL,
+  PROMOS_SQL,
+  SIZES_SQL,
+  loadCardView,
+  toPublicShop,
+} from "../views";
 
 const CARD_HEADER = "x-card-token";
 // Wrong-PIN limits. A 4-digit PIN has only 10,000 combinations, so guessing must be slow.
@@ -160,11 +172,14 @@ export function cardRoutes(router: Router): void {
   // Shop info and menu, shown before the customer has a card.
   router.get("/api/shops/:slug", async ({ env, params }) => {
     const shop = await findShopBySlug(env.DB, params.slug);
-    const [menu, promos] = await env.DB.batch([
+    const [menu, sizes, promos] = await env.DB.batch([
       env.DB.prepare(MENU_SQL).bind(shop.id),
+      env.DB.prepare(SIZES_SQL).bind(shop.id),
       env.DB.prepare(PROMOS_SQL).bind(shop.id),
     ]);
-    return json(toPublicShop(shop, menu.results as MenuRow[], promos.results as PromoRow[]));
+    return json(
+      toPublicShop(shop, menu.results as MenuRow[], sizes.results as SizeRow[], promos.results as PromoRow[]),
+    );
   });
 
   // The shop logo. The URL carries a version number, so browsers can keep it for a year.
@@ -249,16 +264,14 @@ export function cardRoutes(router: Router): void {
     assertCanStamp(shop, card, now);
     const approvedVia = await checkBaristaPin(env.DB, shop, card, body.pin, now);
 
-    // Merge duplicate lines (same item twice).
-    const qtyById = new Map<string, number>();
-    for (const line of body.items) qtyById.set(line.id, (qtyById.get(line.id) ?? 0) + line.qty);
-    const ids = [...qtyById.keys()];
+    const ids = [...new Set(body.items.map((line) => line.id))];
 
-    const [menuRes, lastRes, todayRes, promosRes, usedRes] = await env.DB.batch([
+    const [menuRes, sizesRes, lastRes, todayRes, promosRes, usedRes] = await env.DB.batch([
       env.DB.prepare(
         `SELECT id, name, price_cents, earns_stamp, is_available, sort_order FROM menu_items
          WHERE shop_id = ? AND is_archived = 0 AND is_available = 1 AND id IN (${ids.map(() => "?").join(",")})`,
       ).bind(shop.id, ...ids),
+      env.DB.prepare(sizesForItemsSql(ids.length)).bind(...ids),
       env.DB.prepare(
         `SELECT created_at FROM orders WHERE card_id = ? AND status = 'approved'
          ORDER BY created_at DESC LIMIT 1`,
@@ -285,7 +298,10 @@ export function cardRoutes(router: Router): void {
       );
     }
 
-    const stampItems = countStampItems(menu, qtyById);
+    // Each line priced at its size; repeated lines merged. Sizes only count for items that passed
+    // the shop check above, so another shop's size can't be used.
+    const lines = buildLines(menu, sizesRes.results as SizeRow[], body.items);
+    const stampItems = countStampItems(lines);
     const earned = shop.stamp_mode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
     const today = (todayRes.results as { n: number }[])[0]?.n ?? 0;
     const added =
@@ -302,10 +318,10 @@ export function cardRoutes(router: Router): void {
     const stampsAfter = card.stamps + added;
     const promo = body.promo ? requireReadyPromo(promosRes, usedRes, stampsAfter) : null;
     if (body.reward) assertReachesFreeBox(stampsAfter, shop.stamps_required);
-    const priced = priceOrder(menu, qtyById, {
+    const priced = priceOrder(lines, {
       promo,
-      promoItemId: body.promo?.itemId,
-      freeItemId: body.reward?.itemId,
+      promoItem: body.promo,
+      freeItem: body.reward,
       stampsBefore: card.stamps,
     });
 

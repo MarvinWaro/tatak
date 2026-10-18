@@ -2,6 +2,14 @@ import { type CSSProperties, useEffect, useState } from "react";
 import { promoDiscount, promoNeedsStampItem, readyPromo } from "../../../shared/promos";
 import type { AdminCustomer, AdminMenuItem, CustomerPromos, StampMode } from "../../../shared/types";
 import { Icon } from "../../components/Icon";
+import {
+  MenuPicker,
+  type Quantities,
+  apiLines,
+  apiRef,
+  orderLines,
+  pickLine,
+} from "../../components/MenuPicker";
 import { useToast } from "../../components/Toast";
 import { api, errorMessage } from "../../lib/api";
 import { peso, plural, whenOf } from "../../lib/format";
@@ -199,11 +207,6 @@ function localInputValue(ms: number): string {
 }
 
 /** The item picked in a select, or else the priciest one. */
-function pickItem(items: AdminMenuItem[], pickedId: string | null): AdminMenuItem | null {
-  if (items.length === 0) return null;
-  return items.find((m) => m.id === pickedId) ?? items.reduce((a, b) => (b.priceCents > a.priceCents ? b : a));
-}
-
 /** A real purchase: counts in Sales and adds stamps. */
 function RecordPurchase({
   customer,
@@ -221,7 +224,7 @@ function RecordPurchase({
   onCancel: () => void;
   onSaved: (c: AdminCustomer, stampsAdded: number, totalCents: number) => void;
 }) {
-  const [qty, setQty] = useState<Record<string, number>>({});
+  const [qty, setQty] = useState<Quantities>({});
   const [when, setWhen] = useState<"now" | "earlier">("now");
   const [at, setAt] = useState(() => localInputValue(Date.now() - 3600000));
   const [busy, setBusy] = useState(false);
@@ -229,33 +232,31 @@ function RecordPurchase({
   // The shop's promos and this customer's used ones. The server checks the promo again when saving.
   const { data: promoState } = useApi<CustomerPromos>(`/api/admin/customers/${customer.id}/promos`);
   const [usePromo, setUsePromo] = useState(false);
-  const [promoItemId, setPromoItemId] = useState<string | null>(null);
+  const [promoKey, setPromoKey] = useState<string | null>(null);
   const [useFree, setUseFree] = useState(false);
-  const [freeItemId, setFreeItemId] = useState<string | null>(null);
+  const [freeKey, setFreeKey] = useState<string | null>(null);
 
-  const lines = menu.filter((m) => (qty[m.id] ?? 0) > 0);
-  const count = lines.reduce((s, m) => s + qty[m.id], 0);
-  const stampItems = lines.reduce((s, m) => s + (m.earnsStamp ? qty[m.id] : 0), 0);
+  const lines = orderLines(menu, qty);
+  const count = lines.reduce((s, l) => s + l.qty, 0);
+  const stampLines = lines.filter((l) => l.item.earnsStamp);
+  const stampItems = stampLines.reduce((s, l) => s + l.qty, 0);
   const stamps = stampMode === "per_cup" ? stampItems : stampItems > 0 ? 1 : 0;
   // Counts this purchase's stamps, like the customer's phone: at 4 stamps, 2 cups reach a stamp-5
   // promo, and at 9 stamps on a 10-box card the next cup lands on the free box.
   const stampsBefore = promoState?.stamps ?? customer.stamps;
   const stampsAfter = stampsBefore + stamps;
-  const stampLines = lines.filter((m) => m.earnsStamp);
   const freeOffered = promoState !== null && stampsAfter >= required && stampLines.length > 0;
-  const freeItem = freeOffered && useFree ? pickItem(stampLines, freeItemId) : null;
+  const freeLine = freeOffered && useFree ? pickLine(stampLines, freeKey) : null;
   const reached = promoState ? readyPromo(promoState.promos, stampsAfter, promoState.used) : null;
   const promoLines = reached
     ? (promoNeedsStampItem(reached, stampsBefore) ? stampLines : lines).filter(
-        (m) => !(freeItem && m.id === freeItem.id && qty[m.id] < 2),
+        (l) => !(freeLine && l.key === freeLine.key && l.qty < 2),
       )
     : [];
   const promo = reached && (reached.percentOff === 0 || promoLines.length > 0) ? reached : null;
-  const promoItem = promo && usePromo && promo.percentOff > 0 ? pickItem(promoLines, promoItemId) : null;
-  const discount = promo && promoItem ? promoDiscount(promoItem.priceCents, promo.percentOff) : 0;
-  const total = lines.reduce((s, m) => s + qty[m.id] * m.priceCents, 0) - discount - (freeItem?.priceCents ?? 0);
-  const change = (id: string, d: number) =>
-    setQty({ ...qty, [id]: Math.max(0, Math.min(20, (qty[id] ?? 0) + d)) });
+  const promoLine = promo && usePromo && promo.percentOff > 0 ? pickLine(promoLines, promoKey) : null;
+  const discount = promo && promoLine ? promoDiscount(promoLine.unitCents, promo.percentOff) : 0;
+  const total = lines.reduce((s, l) => s + l.qty * l.unitCents, 0) - discount - (freeLine?.unitCents ?? 0);
 
   const save = async () => {
     setBusy(true);
@@ -268,10 +269,10 @@ function RecordPurchase({
         {
           method: "POST",
           body: {
-            items: lines.map((m) => ({ id: m.id, qty: qty[m.id] })),
+            items: apiLines(lines),
             at: time,
-            promo: promo && usePromo ? { itemId: promoItem?.id } : undefined,
-            reward: freeItem ? { itemId: freeItem.id } : undefined,
+            promo: promo && usePromo ? apiRef(promoLine) : undefined,
+            reward: freeLine ? apiRef(freeLine) : undefined,
           },
         },
       );
@@ -288,35 +289,7 @@ function RecordPurchase({
         <h3 className="subpanel-title">Record a purchase</h3>
         <p className="small muted">For when the customer can't use their phone. It counts in Sales and adds stamps.</p>
       </div>
-      <ul className="menu-list" style={{ margin: 0 }}>
-        {menu.map((m) => {
-          const n = qty[m.id] ?? 0;
-          return (
-            <li key={m.id} className={`menu-row menu-row--compact ${n > 0 ? "menu-row--picked" : ""}`}>
-              <div>
-                <div className="menu-name">{m.name}</div>
-                <div className="menu-meta">
-                  {peso(m.priceCents)}
-                  {!m.earnsStamp && ", no stamp"}
-                </div>
-              </div>
-              <div className="stepper" role="group" aria-label={`${m.name} quantity`}>
-                {n > 0 && (
-                  <>
-                    <button type="button" onClick={() => change(m.id, -1)} aria-label={`Remove one ${m.name}`}>
-                      <Icon name="minus" />
-                    </button>
-                    <output>{n}</output>
-                  </>
-                )}
-                <button type="button" className="plus" onClick={() => change(m.id, 1)} aria-label={`Add one ${m.name}`}>
-                  <Icon name="plus" />
-                </button>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+      <MenuPicker menu={menu} qty={qty} setQty={setQty} compact />
 
       {freeOffered && (
         <div className="stack" style={{ "--gap": "8px" } as CSSProperties}>
@@ -336,12 +309,12 @@ function RecordPurchase({
               <select
                 id={`free-item-${customer.id}`}
                 className="input"
-                value={freeItem?.id ?? ""}
-                onChange={(e) => setFreeItemId(e.target.value)}
+                value={freeLine?.key ?? ""}
+                onChange={(e) => setFreeKey(e.target.value)}
               >
-                {stampLines.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}: −{peso(m.priceCents)}
+                {stampLines.map((l) => (
+                  <option key={l.key} value={l.key}>
+                    {l.name}: −{peso(l.unitCents)}
                   </option>
                 ))}
               </select>
@@ -370,12 +343,12 @@ function RecordPurchase({
               <select
                 id={`promo-item-${customer.id}`}
                 className="input"
-                value={promoItem?.id ?? ""}
-                onChange={(e) => setPromoItemId(e.target.value)}
+                value={promoLine?.key ?? ""}
+                onChange={(e) => setPromoKey(e.target.value)}
               >
-                {promoLines.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}: −{peso(promoDiscount(m.priceCents, promo.percentOff))}
+                {promoLines.map((l) => (
+                  <option key={l.key} value={l.key}>
+                    {l.name}: −{peso(promoDiscount(l.unitCents, promo.percentOff))}
                   </option>
                 ))}
               </select>

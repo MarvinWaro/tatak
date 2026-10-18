@@ -34,7 +34,7 @@ Live at **https://tatak.trade** (also `tatak.mrvnwr-dev.workers.dev`). Repo: `Ma
 | Hosting | Cloudflare Workers with static assets; only `/api/*` runs the Worker |
 | Deploy | Cloudflare Workers Builds from GitHub `main` |
 
-No ORM, no UI library, few dependencies (react, react-dom, zod, qrcode). Keep it that way unless there is a strong reason; ask first.
+No ORM, no UI library, few dependencies (react, react-dom, zod, qrcode, driver.js for the Settings and Menu tours, loaded only when a tour starts). Keep it that way unless there is a strong reason; ask first.
 
 **Not Vercel:** D1 only runs on Cloudflare, and Vercel's free plan forbids commercial use.
 
@@ -64,7 +64,7 @@ npm run superadmin:remote   # same, in the live D1
 ## Layout
 
 ```
-migrations/            0001_init, 0002_barista_pin, 0003_shop_branding, 0004_orders_time_index, 0005_super_admins, 0006_promos, 0007_free_box
+migrations/            0001_init, 0002_barista_pin, 0003_shop_branding, 0004_orders_time_index, 0005_super_admins, 0006_promos, 0007_free_box, 0008_sizes
 scripts/create-super-admin.mjs  terminal prompts behind npm run superadmin
 scripts/db-fresh.mjs   drop all tables + rerun migrations (npm run db:fresh / db:fresh:remote)
 shared/types.ts        API shapes shared by worker and app
@@ -83,19 +83,21 @@ worker/routes/reports.ts   sales report, orders, CSV, void
 worker/routes/super.ts     super admin: log in/out, all shops, all transactions (read-only)
 src/pages/CustomerPage.tsx customer card, order picker, barista handoff + PIN pad
 src/pages/admin/*          Sales, Orders, Menu, Customers, Settings, Poster
+src/lib/tour.ts            Settings and Menu tours (driver.js, lazy-loaded); steps point at data-tour="…" attributes
 src/pages/super/*          Super admin: log in, Shops, Transactions (at /super)
-src/components/            StampCard, HoldButton, PinPad, Toast, Icon, DayPicker
+src/components/            StampCard, HoldButton, PinPad, Toast, Icon, DayPicker, MenuPicker (order rows per item/size)
 ```
 
 ## Data model
 
-`shops`, `sessions`, `menu_items`, `cards`, `orders`, `order_items`, `stamp_adjustments`, `shop_logos`, `super_admins`, `super_sessions`, `card_promos`.
+`shops`, `sessions`, `menu_items`, `cards`, `orders`, `order_items`, `stamp_adjustments`, `shop_logos`, `super_admins`, `super_sessions`, `card_promos`, `menu_item_sizes`.
 
 - IDs are **ULIDs**. Times are **UTC milliseconds**. Money is **centavos** (integer).
 - Reports and opening hours use the shop's time zone (`Asia/Manila`).
 - `orders.approved_via`: `tap`, `pin`, or `admin` (barista recorded it from his own phone).
 - Voids set `orders.status = 'voided'` and reverse stamps. Rows are never hard-deleted.
-- Menu items are archived (`is_archived = 1`), not deleted, so old orders keep their link.
+- Menu items are archived (`is_archived = 1`), not deleted, so old orders keep their link. So are their sizes.
+- **Sizes:** `menu_item_sizes` (per item, own price, max 6). An item with sizes is ordered per size (`{ id, sizeId, qty }`); `menu_items.price_cents` then holds the lowest size price. `order_items.name` stores the name as sold ("Spanish Latte (Large)") and `order_items.size_id` the link, so reports split sizes with no extra logic. Sizes reach a shop only through `menu_items.shop_id`; `buildLines()` in `worker/orders.ts` only accepts sizes of items that passed the shop check.
 
 **Deliberate denormalizations (keep them):**
 - `order_items.name` and `order_items.price_cents` are snapshots at order time, so old reports don't change when prices change.
