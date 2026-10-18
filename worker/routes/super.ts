@@ -11,6 +11,7 @@ import { createSuperSession, destroySuperSession, requireSuperAdmin, verifyPassw
 import { HttpError, json, readJson } from "../http";
 import type { Router } from "../router";
 import { addDays, localDate, localMidnight } from "../time";
+import { loadUsage } from "../usage";
 import { loginSchema, shopIdSchema } from "../validate";
 import { type OrderItemRow, type OrderRow, readRange, toAdminOrders } from "./reports";
 
@@ -80,6 +81,13 @@ export function superRoutes(router: Router): void {
   });
 
   // All shops, newest first, with a few numbers to see who is actually using Tatak.
+  // Cloudflare usage against the free plan, for Tatak and the other systems on the account.
+  // ?fresh=1 skips the 5-minute cache.
+  router.get("/api/super/usage", async ({ env, req, url }) => {
+    await requireSuperAdmin(env, req);
+    return json(await loadUsage(env, url.searchParams.get("fresh") === "1"));
+  });
+
   router.get("/api/super/shops", async ({ env, req }) => {
     await requireSuperAdmin(env, req);
     const today = localDate(Date.now(), PLATFORM_TIMEZONE);

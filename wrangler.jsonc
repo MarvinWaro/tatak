@@ -19,6 +19,11 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	// For the super admin Usage page. The API token is a secret: npx wrangler secret put CF_ANALYTICS_TOKEN
+	"vars": {
+		"CF_ACCOUNT_ID": "6690d15fd0290af1068cce716cf6393e",
+		"USAGE_SYSTEMS": "[{\"name\":\"Tatak\",\"script\":\"tatak\",\"databaseId\":\"473ebeaf-c227-4fc8-8829-6d57ef8359ac\"},{\"name\":\"NEXA\",\"script\":\"nexa\",\"databaseId\":\"c84ee2e4-6091-4441-ab14-7c28a7b7f6a4\"}]"
+	},
 	"observability": {
 		"enabled": true
 	}

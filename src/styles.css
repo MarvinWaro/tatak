@@ -2399,3 +2399,35 @@ label.btn.is-busy {
 .input-eye:hover {
   color: var(--roast);
 }
+
+/* Super admin usage meters: how much of a free-plan limit is used. */
+.meter-row {
+  display: grid;
+  gap: 6px;
+}
+
+.meter-label {
+  font-weight: 700;
+}
+
+.meter {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--concrete);
+  overflow: hidden;
+}
+
+.meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ink);
+}
+
+.meter--warn > span {
+  background: #c98a12;
+}
+
+.meter--danger > span {
+  background: var(--danger);
+}

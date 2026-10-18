@@ -80,11 +80,12 @@ worker/routes/card.ts      customer: shop, card, order (with promos and the free
 worker/routes/auth.ts      register, login, logout, password
 worker/routes/admin.ts     settings, PIN, logo, menu, customers, record purchase
 worker/routes/reports.ts   sales report, orders, CSV, void
-worker/routes/super.ts     super admin: log in/out, all shops, all transactions (read-only)
+worker/routes/super.ts     super admin: log in/out, all shops, all transactions, usage (read-only)
+worker/usage.ts            Cloudflare usage for the super admin (GraphQL analytics, read-only token CF_ANALYTICS_TOKEN as a secret, 5-min cache); systems listed in wrangler.jsonc vars USAGE_SYSTEMS
 src/pages/CustomerPage.tsx customer card, order picker, barista handoff + PIN pad
 src/pages/admin/*          Sales, Orders, Menu, Customers, Settings, Poster
 src/lib/tour.ts            Settings and Menu tours (driver.js, lazy-loaded); steps point at data-tour="…" attributes
-src/pages/super/*          Super admin: log in, Shops, Transactions (at /super)
+src/pages/super/*          Super admin: log in, Shops, Transactions, Usage (at /super)
 src/components/            StampCard, HoldButton, PinPad, Toast, Icon, DayPicker, MenuPicker (order rows per item/size)
 ```
 
