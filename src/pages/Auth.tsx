@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import type { ShopSettings } from "../../shared/types";
 import { BrandLogo } from "../components/Icon";
+import { PasswordInput } from "../components/PasswordInput";
 import { api, errorMessage } from "../lib/api";
 import { Link, navigate } from "../lib/router";
 
@@ -73,15 +74,7 @@ export function Login() {
         </div>
         <div className="field">
           <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            className="input"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+          <PasswordInput id="password" value={password} onChange={setPassword} autoComplete="current-password" />
         </div>
         {error && (
           <p className="form-error" role="alert">
@@ -181,16 +174,7 @@ export function Register() {
         </div>
         <div className="field">
           <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            className="input"
-            type="password"
-            autoComplete="new-password"
-            minLength={8}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+          <PasswordInput id="password" value={password} onChange={setPassword} autoComplete="new-password" minLength={8} />
           <span className="field-hint">At least 8 characters.</span>
         </div>
         {error && (

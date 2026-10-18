@@ -2370,3 +2370,32 @@ label.btn.is-busy {
   outline: 3px solid var(--ink);
   outline-offset: 2px;
 }
+
+/* Password field with a show/hide eye button inside it. */
+.input-password {
+  position: relative;
+}
+
+.input-password .input {
+  padding-right: 52px;
+}
+
+.input-eye {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--roast-2);
+  cursor: pointer;
+}
+
+.input-eye:hover {
+  color: var(--roast);
+}

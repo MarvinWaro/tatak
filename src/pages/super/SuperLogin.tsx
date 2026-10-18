@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PasswordInput } from "../../components/PasswordInput";
 import { api, errorMessage } from "../../lib/api";
 import { navigate } from "../../lib/router";
 import { AuthShell } from "../Auth";
@@ -46,15 +47,7 @@ export function SuperLogin() {
         </div>
         <div className="field">
           <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            className="input"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+          <PasswordInput id="password" value={password} onChange={setPassword} autoComplete="current-password" />
         </div>
         {error && (
           <p className="form-error" role="alert">
